@@ -158,7 +158,7 @@ package_macos() {
         lib="$(crate_lib "$crate")"
         out_name="$(plugin_slug "$crate")"
         identifier="com.lua-plugin-host.${crate}"
-        display_name="Lua ${crate^}"
+        display_name="Lua Plugin"
         case "$crate" in
             audio-fx) display_name="Lua Audio FX" ;;
             midi-fx) display_name="Lua MIDI FX" ;;
