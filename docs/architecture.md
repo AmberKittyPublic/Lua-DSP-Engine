@@ -71,11 +71,15 @@ uses them, and its custom editor displays them. Lua may override these with
 `synth.set_mode()` and `synth.set_max_voices()`; overrides are reset when the
 script is loaded and can be cleared with `"default"` or `nil`.
 
-Scripts can declare per-script macro reset values with `params.set_default()` or
-`params.set_defaults()`. Applying a script preserves current macro values; the
-editor's **Reset macros to script defaults** button explicitly applies the
-declarations. These are script reset values, not changes to the DAW's native
-parameter default metadata.
+Scripts can map a normalized macro to a typed script range with
+`params.set_range()` (`int`/`integer` or `float`, with `min` and `max`), then read
+the scaled value with `params.get()`. `ui.param()` accepts the same scale spec for
+a custom-range slider, including integer-only controls. Scripts can declare
+per-script macro reset values in that script domain with `params.set_default()` or
+`params.set_defaults()`; defaults do not require a type argument. Applying a script
+preserves current macro values; the editor's **Reset macros to script defaults**
+button explicitly applies the declarations. These are script reset values, not
+changes to the DAW's native parameter default metadata.
 
 The custom editor exposes voice controls for the instrument, all macros, the Lua
 script editor, and script-defined UI commands. The script text and its name are

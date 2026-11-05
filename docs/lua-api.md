@@ -127,28 +127,51 @@ Transport fields are updated for processing callbacks. Do not assume a meaningfu
 ## `params`
 
 - `params.count()` returns `64`.
-- `params.get(index)` reads a macro value in `0..1`.
-- `params.default(index)` reads the current script-declared reset value.
+- `params.get(index)` reads a macro value. It returns the normalized `0..1` value unless a script scale has been declared, in which case it returns the scaled float or integer value.
+- `params.set_range(index, scale)` declares how a normalized host macro maps to a script value.
+- `params.default(index)` reads the current script-declared reset value in the script's scale.
 - `params.set_default(index, value)` declares one script reset value.
 - `params.set_defaults({ [index] = value, ... })` declares several at once.
 
 ### Macro Defaults
 
-Declare defaults at the top level of the script:
+Declare macro scales and defaults at the top level of the script:
 
 ```lua
-params.set_default(1, 0.65)
-params.set_defaults({
-    [2] = 0.25,
-    [3] = 0.1,
-})
+local unison_scale = { type = "int", min = 1, max = 16 }
+params.set_range(1, unison_scale)
+params.set_default(1, 3) -- script value 3, not normalized 0.2
+
+function process_voice(voice)
+    local unison_count = params.get(1) -- integer 3
+    -- osc:set_unison(unison_count, 8, 0.5)
+end
+
+function draw()
+    ui.param(1, "Unison voices", unison_scale)
+end
 ```
 
-`params.default(index)` reads the declared reset value. Unspecified macros default
-to `0`. Indices are **1-based** (`1..64`); values must be finite numbers in
-`0..1`. Declarations are evaluated when the script loads and should not vary by
-`host.role`, because audio and UI Lua states share this metadata. Calls from later
-callbacks do not change the defaults.
+Macro indexing is **1-based** (`1..64`). `params.set_range()` takes either an
+object (`{ type = "int", min = 1, max = 16 }`) or an array
+(`{ "int", 1, 16 }`). Types are `"int"`/`"integer"` or `"float"`; bounds must be
+finite with `min < max`, and integer bounds must be whole numbers. Scales map the
+host's normalized macro value `0..1` to the requested script range. Integer scales
+round to whole values, so `params.get(index)` can be passed directly to integer
+APIs such as `osc:set_unison()`.
+
+The `params.set_range()` declaration should run at script load, before processing,
+so the audio Lua state knows the mapping even if the editor is closed. Keep scale
+declarations independent of `host.role`, because audio and UI Lua states share this
+metadata. `ui.param(index, label?, scale?)` also accepts the same optional scale
+spec to draw a custom-range slider; it registers that scale when the UI draws.
+
+`params.set_default(s)` values are finite script-domain values and do not require a
+type argument. With a declared scale, a default is in that scale's range (e.g. the
+integer `3` for an integer range of `1..16`). Without a scale, it is interpreted as
+a normalized value and clamped to `0..1` when applied. Unspecified macros reset to
+`0` (or the scale's minimum for a typed macro). Calls from callbacks do not change
+the declared reset values.
 
 Declaring a default does **not** change the current macro value or the DAW's native
 parameter default. Applying or reloading a script preserves current and automated
@@ -347,7 +370,7 @@ expose arbitrary drawing.
 - `ui.separator_vertical()` always draws a vertical line.
 - `ui.space(pixels?)`, defaulting to 8 logical pixels.
 - `ui.button(id, label)` draws a button. A click currently produces only a temporary visual highlight; click state is not returned to Lua yet.
-- `ui.param(index, label?)` draws a slider for macro `1..64`. Double-clicking its label resets the macro to its script default, or `0` if none was declared.
+- `ui.param(index, label?, scale?)` draws a slider for macro `1..64`. `scale` uses the same object or array form as `params.set_range()` and makes the slider display the script-domain value. Double-clicking its label resets to the script default, or `0` if none was declared.
 - `ui.radio_param(index, label, choices)` binds a radio group to macro `1..64`. It requires at least two string choices; the choices map evenly from normalized macro value `0` to `1`.
 - `ui.meter(value, label?)` draws a progress bar clamped to `0..1`.
 - `ui.row(function() ... end)` lays out child widgets horizontally.

@@ -4,11 +4,16 @@
 -- Macro 1: output level, Macro 2: LFO filter depth,
 -- Macros 3-6: ADSR, Macro 7: envelope filter depth. LFO depth maps 0..1 to
 -- 0..6 octaves; ADSR depth maps 0..1 to 0..4 octaves. Zero disables each sweep.
+-- Macros 8-10: unison voice count (1..16), detune (0..100 cents), stereo spread.
 
 local voices = {}
 local BPM = 124.0
 local EIGHTH_NOTE_HZ = BPM / 60.0 * 2.0
+local UNISON_COUNT_SCALE = { type = "int", min = 1, max = 16 }
+local UNISON_DETUNE_SCALE = { type = "float", min = 0, max = 100 }
 
+params.set_range(8, UNISON_COUNT_SCALE)
+params.set_range(9, UNISON_DETUNE_SCALE)
 params.set_defaults({
     [1] = 0.65,
     [2] = 0.65,
@@ -17,9 +22,9 @@ params.set_defaults({
     [5] = 0.65,
     [6] = 0.22,
     [7] = 0.5,
-	[8] = 3, -- type = int
-	[9] = 8, -- type = int
-	[10]= 0.65
+    [8] = 3,
+    [9] = 8,
+    [10] = 0.65,
 })
 
 function process_voice(voice)
@@ -103,16 +108,16 @@ function draw()
         ui.param(2, "LFO filter depth")
     end)
 
-	ui.separator_horizontal()
+    ui.separator_horizontal()
     ui.label("OSC 1 Unison")
     ui.row(function()
-        ui.param(8, "count")
+        ui.param(8, "count", UNISON_COUNT_SCALE)
         ui.separator_vertical()
-        ui.param(9, "detune")
+        ui.param(9, "detune", UNISON_DETUNE_SCALE)
     end)
-	ui.row(function()
-		ui.param(10, "spread")
-	end)
+    ui.row(function()
+        ui.param(10, "spread")
+    end)
 
     ui.separator_horizontal()
     ui.label("ADSR envelope")

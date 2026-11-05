@@ -1,11 +1,16 @@
 -- A plucky FM bass / "donk" patch.
--- Macro 1: level, Macro 2: FM index, Macro 3: pitch drop, Macro 4: phase distortion.
+-- Macro 1: level, Macro 2: FM index, Macro 3: pitch drop, Macro 4: phase distortion,
+-- Macro 5: integer unison voice count (1..16).
+
+local UNISON_SCALE = { type = "int", min = 1, max = 16 }
+params.set_range(5, UNISON_SCALE)
 
 params.set_defaults({
     [1] = 0.65,
     [2] = 0.25,
     [3] = 0.15,
     [4] = 0.1,
+    [5] = 3,
 })
 
 local voices = {}
@@ -14,12 +19,14 @@ function process_voice(voice)
     local state = voices[voice.id]
     if not state then
         local osc = synth.osc("sine")
-        osc:set_unison(1)
+        local unison = params.get(5)
+        osc:set_unison(unison, 8, 0.4)
         state = {
             osc = osc,
             env = synth.adsr(0.002, 0.09, 0.28, 0.08),
             age = voice.age,
             pitch = 1.0,
+            unison = unison,
         }
         state.env:trigger()
         voices[voice.id] = state
@@ -27,6 +34,12 @@ function process_voice(voice)
         state.age = voice.age
         state.env:trigger()
         state.pitch = 1.0
+    end
+
+    local unison = params.get(5)
+    if state.unison ~= unison then
+        state.osc:set_unison(unison, 8, 0.4)
+        state.unison = unison
     end
 
     state.env:gate(voice.gate)
@@ -64,6 +77,7 @@ function draw()
     ui.param(2, "FM index")
     ui.param(3, "Pitch drop")
     ui.param(4, "Phase distortion")
+    ui.param(5, "Unison voices", UNISON_SCALE)
     ui.separator()
     ui.label("Sine carrier, 2:1 FM, ADSR envelope, short pitch drop")
 end

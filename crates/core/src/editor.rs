@@ -12,7 +12,7 @@ use nice_plug_egui::{
 };
 
 use crate::lua::{HostRole, LuaHost};
-use crate::params::{DEFAULT_SCRIPT, PluginKind, PluginParams};
+use crate::params::{DEFAULT_SCRIPT, MacroScale, MacroScaleType, PluginKind, PluginParams};
 use crate::ui::UiCommand;
 
 const MIN_WINDOW_SIZE: LogicalSize<f32> = LogicalSize::new(760.0, 640.0);
@@ -145,10 +145,16 @@ impl LuaEditor {
                                 ui,
                                 &format!("Macro {}", index + 1),
                                 &slot.value,
-                                self.params.script_macro_default(index),
+                                self.params.script_macro_default_normalized(index),
                                 setter,
                             );
-                            ui.add(ParamSlider::for_param(&slot.value, setter).with_width(220.0));
+                            render_macro_slider(
+                                ui,
+                                &slot.value,
+                                self.params.macro_scale(index),
+                                setter,
+                                220.0,
+                            );
                             ui.end_row();
                         }
                     });
@@ -210,7 +216,10 @@ impl LuaEditor {
 
         for (index, slot) in self.params.macros.iter().enumerate() {
             setter.begin_set_parameter(&slot.value);
-            setter.set_parameter(&slot.value, self.params.script_macro_default(index));
+            setter.set_parameter_normalized(
+                &slot.value,
+                self.params.script_macro_default_normalized(index),
+            );
             setter.end_set_parameter(&slot.value);
         }
     }
@@ -356,7 +365,11 @@ fn render_commands(
                     clicked.push(id.clone());
                 }
             }
-            UiCommand::Param { index, label } => {
+            UiCommand::Param {
+                index,
+                label,
+                scale,
+            } => {
                 if let Some(slot) = index
                     .checked_sub(1)
                     .and_then(|index| params.macros.get(index))
@@ -367,10 +380,10 @@ fn render_commands(
                             ui,
                             label,
                             &slot.value,
-                            params.script_macro_default(macro_index),
+                            params.script_macro_default_normalized(macro_index),
                             setter,
                         );
-                        ui.add(ParamSlider::for_param(&slot.value, setter).with_width(200.0));
+                        render_macro_slider(ui, &slot.value, *scale, setter, 200.0);
                     });
                 }
             }
@@ -413,6 +426,30 @@ fn render_macro_label(
     if response.double_clicked() {
         setter.begin_set_parameter(param);
         setter.set_parameter(param, default_value);
+        setter.end_set_parameter(param);
+    }
+}
+
+fn render_macro_slider(
+    ui: &mut egui::Ui,
+    param: &FloatParam,
+    scale: Option<MacroScale>,
+    setter: &ParamSetter<'_>,
+    width: f32,
+) {
+    let Some(scale) = scale else {
+        ui.add(ParamSlider::for_param(param, setter).with_width(width));
+        return;
+    };
+
+    let mut value = scale.value(param.unmodulated_normalized_value());
+    let mut slider = egui::Slider::new(&mut value, scale.min..=scale.max);
+    if scale.kind == MacroScaleType::Integer {
+        slider = slider.integer();
+    }
+    if ui.add_sized([width, 20.0], slider).changed() {
+        setter.begin_set_parameter(param);
+        setter.set_parameter_normalized(param, scale.normalize(value));
         setter.end_set_parameter(param);
     }
 }

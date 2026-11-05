@@ -203,12 +203,7 @@ impl LuaHost {
         )?;
         install_audio_api(&lua, &globals, self.audio_bridge.clone())?;
         install_midi_api(&lua, &globals, self.midi_out.clone())?;
-        install_ui_api(
-            &lua,
-            &globals,
-            self.ui_builder.clone(),
-            self.params.clone(),
-        )?;
+        install_ui_api(&lua, &globals, self.ui_builder.clone(), self.params.clone())?;
 
         globals.set(
             "log",
@@ -651,9 +646,7 @@ fn parse_macro_scale(spec: &Table) -> mlua::Result<MacroScale> {
     let type_name = spec
         .get::<Option<String>>("type")?
         .or(spec.get::<Option<String>>(1)?)
-        .ok_or_else(|| {
-            mlua::Error::RuntimeError("macro scale must specify a type".to_string())
-        })?;
+        .ok_or_else(|| mlua::Error::RuntimeError("macro scale must specify a type".to_string()))?;
     let min = spec
         .get::<Option<f32>>("min")?
         .or(spec.get::<Option<f32>>(2)?)
@@ -1057,29 +1050,31 @@ fn install_ui_api(
     let macro_params = params;
     table.set(
         "param",
-        lua.create_function(move |_, (index, label, spec): (usize, Option<String>, Option<Table>)| {
-            let zero_based = index.checked_sub(1).filter(|index| *index < MACRO_COUNT);
-            let Some(zero_based) = zero_based else {
-                return Err(mlua::Error::RuntimeError(format!(
-                    "parameter index out of range: {index}"
-                )));
-            };
+        lua.create_function(
+            move |_, (index, label, spec): (usize, Option<String>, Option<Table>)| {
+                let zero_based = index.checked_sub(1).filter(|index| *index < MACRO_COUNT);
+                let Some(zero_based) = zero_based else {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "parameter index out of range: {index}"
+                    )));
+                };
 
-            let scale = if let Some(spec) = spec {
-                let scale = parse_macro_scale(&spec)?;
-                macro_params.set_macro_scale(zero_based, scale);
-                Some(scale)
-            } else {
-                macro_params.macro_scale(zero_based)
-            };
+                let scale = if let Some(spec) = spec {
+                    let scale = parse_macro_scale(&spec)?;
+                    macro_params.set_macro_scale(zero_based, scale);
+                    Some(scale)
+                } else {
+                    macro_params.macro_scale(zero_based)
+                };
 
-            ui.lock().param(
-                index,
-                label.unwrap_or_else(|| format!("Macro {index}")),
-                scale,
-            );
-            Ok(())
-        })?,
+                ui.lock().param(
+                    index,
+                    label.unwrap_or_else(|| format!("Macro {index}")),
+                    scale,
+                );
+                Ok(())
+            },
+        )?,
     )?;
 
     let ui = builder.clone();
@@ -1362,6 +1357,67 @@ mod tests {
 
         host.build_ui_frame(Vec::new()).expect("draw() failed");
         assert_eq!(params.script_macro_default(0), 0.75);
+    }
+
+    #[test]
+    fn typed_macro_range_maps_getter_and_custom_slider() {
+        let params = Arc::new(PluginParams::default());
+        params.set_script(
+            "typed-macro.lua",
+            r#"
+            local unison = { "int", 1, 16 }
+            local detune = { type = "float", min = 0, max = 100 }
+            params.set_range(1, unison)
+            params.set_range(2, detune)
+            params.set_defaults({ [1] = 4, [2] = 8 })
+            function draw()
+                ui.param(1, "Unison", unison)
+                ui.param(2, "Detune", detune)
+                ui.label("Mapped count: " .. params.get(1))
+            end
+            "#,
+        );
+        let mut host = LuaHost::new(
+            params.clone(),
+            PluginKind::Instrument,
+            HostRole::Ui,
+            44_100.0,
+        );
+        assert!(host.last_error().is_none(), "{:?}", host.last_error());
+        assert_eq!(params.script_macro_default(0), 4.0);
+        assert!((params.script_macro_default_normalized(0) - 0.2).abs() < 1e-6);
+        assert_eq!(params.script_macro_default(1), 8.0);
+        assert!((params.script_macro_default_normalized(1) - 0.08).abs() < 1e-6);
+
+        let commands = host.build_ui_frame(Vec::new()).expect("draw() failed");
+        assert!(has_command(&commands, |command| matches!(
+            command,
+            UiCommand::Param {
+                index: 1,
+                scale: Some(MacroScale {
+                    kind: MacroScaleType::Integer,
+                    min: 1.0,
+                    max: 16.0,
+                }),
+                ..
+            }
+        )));
+        assert!(has_command(&commands, |command| matches!(
+            command,
+            UiCommand::Param {
+                index: 2,
+                scale: Some(MacroScale {
+                    kind: MacroScaleType::Float,
+                    min: 0.0,
+                    max: 100.0,
+                }),
+                ..
+            }
+        )));
+        assert!(has_command(&commands, |command| matches!(
+            command,
+            UiCommand::Label(text) if text == "Mapped count: 1"
+        )));
     }
 
     #[test]

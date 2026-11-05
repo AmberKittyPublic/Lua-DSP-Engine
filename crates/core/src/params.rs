@@ -297,3 +297,19 @@ impl PluginParams {
         f32::from_bits(self.meter_peak.load(Ordering::Relaxed))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn macro_scale_converts_integer_and_float_ranges() {
+        let integer = MacroScale::new(MacroScaleType::Integer, 1.0, 16.0).unwrap();
+        assert_eq!(integer.value(0.2), 4.0);
+        assert!((integer.normalize(4.0) - 0.2).abs() < 1e-6);
+
+        let float = MacroScale::new(MacroScaleType::Float, -12.0, 12.0).unwrap();
+        assert_eq!(float.value(0.5), 0.0);
+        assert_eq!(float.normalize(0.0), 0.5);
+    }
+}
