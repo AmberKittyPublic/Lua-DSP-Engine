@@ -67,9 +67,9 @@ crate_lib() {
 
 plugin_slug() {
     case "$1" in
-        instrument) echo "lua-plugin-instrument" ;;
-        audio-fx) echo "lua-plugin-audio-fx" ;;
-        midi-fx) echo "lua-plugin-midi-fx" ;;
+        instrument) echo "lumina-dsp-instrument" ;;
+        audio-fx) echo "lumina-dsp-audio-fx" ;;
+        midi-fx) echo "lumina-dsp-midi-fx" ;;
         *) echo "unknown crate: $1" >&2; return 1 ;;
     esac
 }
@@ -122,7 +122,7 @@ package_linux() {
         mkdir -p "$out/vst3/${out_name}.vst3/Contents/x86_64-linux"
         cp "$src" "$out/vst3/${out_name}.vst3/Contents/x86_64-linux/${out_name}.vst3"
     done
-    make_zip "$DIST/lua-plugin-host-linux-x86_64.zip" "$out"
+    make_zip "$DIST/lumina-dsp-linux-x86_64.zip" "$out"
     echo "==> Packaged Linux artifacts in $out"
 }
 
@@ -141,7 +141,7 @@ package_windows() {
         mkdir -p "$out/vst3/${out_name}.vst3/Contents/x86_64-win"
         cp "$src" "$out/vst3/${out_name}.vst3/Contents/x86_64-win/${out_name}.vst3"
     done
-    make_zip "$DIST/lua-plugin-host-windows-x86_64.zip" "$out"
+    make_zip "$DIST/lumina-dsp-windows-x86_64.zip" "$out"
     echo "==> Packaged Windows artifacts in $out"
 }
 
@@ -185,11 +185,11 @@ package_macos() {
         lib="$(crate_lib "$crate")"
         out_name="$(plugin_slug "$crate")"
         identifier="com.lua-plugin-host.${crate}"
-        display_name="Lua Plugin"
+        display_name="Lumina DSP"
         case "$crate" in
-            audio-fx) display_name="Lua Audio FX" ;;
-            midi-fx) display_name="Lua MIDI FX" ;;
-            instrument) display_name="Lua Instrument" ;;
+            audio-fx) display_name="Lumina DSP Audio FX" ;;
+            midi-fx) display_name="Lumina DSP MIDI FX" ;;
+            instrument) display_name="Lumina DSP Instrument" ;;
         esac
 
         local x86="$ROOT/target/x86_64-apple-darwin/release/lib${lib}.dylib"
@@ -205,7 +205,7 @@ package_macos() {
         write_macos_bundle_metadata "$vst3_bundle" "$out_name" "$identifier" "$display_name"
         cp "$universal" "$vst3_bundle/Contents/MacOS/${out_name}"
     done
-    make_zip "$DIST/lua-plugin-host-macos-universal.zip" "$out"
+    make_zip "$DIST/lumina-dsp-macos-universal.zip" "$out"
     echo "==> Packaged macOS artifacts in $out"
 }
 

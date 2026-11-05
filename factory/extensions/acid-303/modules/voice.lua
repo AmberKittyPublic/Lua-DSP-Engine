@@ -1,4 +1,13 @@
 local voice = {}
+local distortion_modes = {
+    "saturator",
+    "bitcrush",
+    "tube",
+    "tape",
+    "overdrive",
+    "fuzz",
+    "diode",
+}
 
 local function clamp(value, min, max)
     if value < min then return min end
@@ -43,6 +52,7 @@ function voice.process(voice, voices, params)
     local decay = params.get(11)
     local sustain = params.get(12)
     local release = params.get(13)
+    local distortion_mode = distortion_modes[math.floor(params.get(15)) + 1] or "saturator"
     local square = params.get(7) >= 0.5
     local accent_amount = params.get(8)
     local slide_time = params.get(9)
@@ -81,6 +91,16 @@ function voice.process(voice, voices, params)
     state.osc:set_lowpass_2(
         cutoff,
         clamp(resonance * (state.accent and 1.06 or 1.0), 0.0, 0.97)
+    )
+    state.osc:set_distortion(
+        distortion_mode,
+        params.get(16),
+        params.get(17),
+        params.get(18),
+        params.get(20),
+        params.get(19),
+        params.get(21),
+        params.get(22)
     )
 
     state.env:gate(voice.gate)

@@ -79,7 +79,7 @@ function voice_ended(id)
 end
 
 function draw()
-    ui.heading("Lua Plugin Host")
+    ui.heading("Lumina DSP")
     ui.label("kind: " .. host.kind)
     ui.label("script: " .. host.script_name)
     ui.separator()

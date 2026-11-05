@@ -1,7 +1,7 @@
 # Factory Scripts
 
 These scripts are starting points for the three plugin types. The plugin copies
-them into `Documents/Lua Plugin Host/extensions/{synth,audio-fx,midi-fx}/` on first open; choose
+them into `Documents/Lumina DSP/extensions/{synth,audio-fx,midi-fx}/` on first open; choose
 **Load script...** in the plugin's **Script** panel to open that folder and load
 one. To apply the values declared in a script's `params.set_defaults()` call,
 choose **Reset macros to script defaults**; loading a script otherwise preserves
@@ -27,6 +27,9 @@ existing macro values.
 - `instrument/open-hihat.lua` and `instrument/closed-hihat.lua`: filtered white-noise
   hats with longer and shorter envelopes, respectively.
 - `instrument/snare.lua`: tuned FM body layered with filtered pink-noise wires.
+- `extensions/acid-303/`: mono 303-style synth with filter-envelope modulation and
+  selectable saturator, bitcrush, tube, tape, overdrive, fuzz, and diode distortion.
+  Its ADSR envelope can add up to 24 dB of distortion drive per note.
 - `audio-fx/stereo-delay.lua`: stereo feedback delay with optional ping-pong
   routing and subtle LFO modulation.
 - `audio-fx/stereo-compressor.lua`: linked stereo compressor with an external
@@ -34,8 +37,9 @@ existing macro values.
   ducking, and transfer-curve series for the generic graph widget.
 - `audio-fx/stereo-reverb.lua`: stereo comb/allpass reverb with room, damping, wet,
   and width controls.
-- `audio-fx/saturator.lua`: soft-clipping saturator with drive, tone, output, and
-  dry/wet mix controls. Its extension computes and plots the current transfer curve.
+- `audio-fx/distortion-suite.lua`: selectable saturator, bitcrush/downsample, tube,
+  tape, overdrive, fuzz, and diode modes, with shared drive, tone, bias, and mix
+  controls. Bit depth and sample-rate reduction are adjustable in digital mode.
 
 All scripts use the shared 64 macro parameters; each script documents its macro
 assignments in its header.

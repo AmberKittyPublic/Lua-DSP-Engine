@@ -85,7 +85,7 @@ changes to the DAW's native parameter default metadata.
 The custom editor exposes voice controls for the instrument, all macros, script
 loading controls, and script-defined UI commands. The script source, name, and
 selected path are persisted with the plugin state. On first open, the editor creates
-`Documents/Lua Plugin Host/` with `extensions/synth`, `extensions/audio-fx`,
+`Documents/Lumina DSP/` with `extensions/synth`, `extensions/audio-fx`,
 `extensions/midi-fx`, `presets`, and `cache/extensions`, then copies bundled factory
 scripts that are not already present.
 
@@ -103,12 +103,15 @@ loops, allocations, or blocking work can still affect audio performance.
 
 At 1x, the steady-state audio path avoids host-side locks and heap allocation.
 Optional editor telemetry is collected only while the editor is open and uses
-fixed-size atomic buffers. Oversampling above 1x is opt-in and currently adds
-resampling work and per-block allocations, so leave it at 1x for real-time-sensitive
-use. Oversampling defaults to 1x and is selectable only for instruments; audio FX
-and MIDI FX stay at 1x. The instrument selector offers 1x, 2x, 4x, 8x, and 16x.
+fixed-size atomic buffers, including a bounded recent-output waveform trace for UI
+oscilloscopes. Oversampling above 1x is opt-in and currently adds resampling work and
+per-block allocations, so leave it at 1x for real-time-sensitive use. Oversampling
+defaults to 1x and is selectable only for instruments; audio FX and MIDI FX stay at
+1x. The instrument selector offers 1x, 2x, 4x, 8x, and 16x.
 
 Prefer Rust-backed helpers such as `synth.osc("saw"):render(...)`,
 `osc:render_env()`, and `osc:render_filtered()` for per-sample synthesis, envelope,
-and filter work. LFO and envelope objects can advance in Rust for each sample
-rendered. See the [Lua API reference](lua-api.md) for exact semantics and limits.
+filter, and distortion work. LFO and envelope objects can advance in Rust for each
+sample rendered; `osc:set_distortion()` also supports sample-accurate envelope drive
+modulation without a Lua sample loop. See the [Lua API reference](lua-api.md) for
+exact semantics and limits.

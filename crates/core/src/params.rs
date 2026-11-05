@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 pub const MACRO_COUNT: usize = 64;
 pub const MAX_VOICES: usize = 32;
 const TRACE_LEN: usize = 128;
+const WAVEFORM_LEN: usize = 256;
 const METER_CHANNELS: usize = 2;
 pub const DEFAULT_SCRIPT: &str = include_str!("../scripts/default.lua");
 
@@ -179,6 +180,8 @@ pub struct PluginParams {
     level_trace_write: AtomicUsize,
     gain_trace: [AtomicU32; TRACE_LEN],
     gain_trace_write: AtomicUsize,
+    waveform: [AtomicU32; WAVEFORM_LEN],
+    waveform_write: AtomicUsize,
     input_channel_peaks: [AtomicU32; METER_CHANNELS],
     output_channel_peaks: [AtomicU32; METER_CHANNELS],
     sidechain_channel_peaks: [AtomicU32; METER_CHANNELS],
@@ -218,6 +221,8 @@ impl Default for PluginParams {
             level_trace_write: AtomicUsize::new(0),
             gain_trace: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
             gain_trace_write: AtomicUsize::new(0),
+            waveform: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
+            waveform_write: AtomicUsize::new(0),
             input_channel_peaks: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
             output_channel_peaks: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
             sidechain_channel_peaks: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
@@ -474,6 +479,20 @@ impl PluginParams {
         read_trace(&self.gain_trace, &self.gain_trace_write)
     }
 
+    pub fn push_waveform_block(&self, num_samples: usize, mut sample_at: impl FnMut(usize) -> f32) {
+        let mut sequence = self.waveform_write.load(Ordering::Relaxed);
+        for sample in 0..num_samples {
+            self.waveform[sequence % WAVEFORM_LEN]
+                .store(sample_at(sample).to_bits(), Ordering::Relaxed);
+            sequence = sequence.wrapping_add(1);
+        }
+        self.waveform_write.store(sequence, Ordering::Release);
+    }
+
+    pub fn waveform_trace(&self) -> Vec<f32> {
+        read_trace(&self.waveform, &self.waveform_write)
+    }
+
     pub fn set_input_channel_peaks(&self, peaks: &[f32]) {
         for (slot, peak) in self.input_channel_peaks.iter().zip(peaks) {
             slot.store(peak.to_bits(), Ordering::Relaxed);
@@ -535,12 +554,12 @@ impl PluginParams {
     }
 }
 
-fn read_trace(trace: &[AtomicU32; TRACE_LEN], write: &AtomicUsize) -> Vec<f32> {
-    let end = write.load(Ordering::Relaxed);
-    let len = end.min(TRACE_LEN);
+fn read_trace<const LEN: usize>(trace: &[AtomicU32; LEN], write: &AtomicUsize) -> Vec<f32> {
+    let end = write.load(Ordering::Acquire);
+    let len = end.min(LEN);
     let start = end.saturating_sub(len);
     (start..end)
-        .map(|sequence| f32::from_bits(trace[sequence % TRACE_LEN].load(Ordering::Relaxed)))
+        .map(|sequence| f32::from_bits(trace[sequence % LEN].load(Ordering::Relaxed)))
         .collect()
 }
 
@@ -570,5 +589,16 @@ mod tests {
         assert_eq!(trace.len(), TRACE_LEN);
         assert_eq!(trace[0], 3.0);
         assert_eq!(trace[TRACE_LEN - 1], (TRACE_LEN + 2) as f32);
+    }
+
+    #[test]
+    fn waveform_keeps_the_latest_block_samples_in_order() {
+        let params = PluginParams::default();
+        params.push_waveform_block(WAVEFORM_LEN + 3, |sample| sample as f32);
+
+        let trace = params.waveform_trace();
+        assert_eq!(trace.len(), WAVEFORM_LEN);
+        assert_eq!(trace[0], 3.0);
+        assert_eq!(trace[WAVEFORM_LEN - 1], (WAVEFORM_LEN + 2) as f32);
     }
 }

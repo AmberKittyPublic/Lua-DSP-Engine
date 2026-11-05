@@ -25,7 +25,7 @@ impl Default for LuaMidiFx {
 }
 
 impl Plugin for LuaMidiFx {
-    const NAME: &'static str = "Lua MIDI FX";
+    const NAME: &'static str = "Lumina DSP MIDI FX";
     const VENDOR: &'static str = "DayDRM software";
     const URL: &'static str = "https://example.com";
     const EMAIL: &'static str = "noreply@example.com";

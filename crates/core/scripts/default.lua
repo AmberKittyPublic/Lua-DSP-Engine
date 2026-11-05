@@ -1,4 +1,4 @@
--- Default Lua Plugin Host script.
+-- Default Lumina DSP script.
 -- Globals: params, host, audio, midi, ui, wave, synth, log
 -- wave functions use phase in turns (0..1). synth.osc() renders in Rust.
 -- process_voice(voice) receives id, note, channel, velocity, gate, frequency, and age.
@@ -85,7 +85,7 @@ function voice_ended(id)
 end
 
 function draw()
-    ui.heading("Lua Plugin Host")
+    ui.heading("Lumina DSP")
     ui.label("kind: " .. host.kind)
     ui.label("script: " .. host.script_name)
     ui.separator()

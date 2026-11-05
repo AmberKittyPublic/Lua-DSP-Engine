@@ -48,7 +48,7 @@ impl EditorHost {
             self.state.clone(),
             self.notifier.clone(),
             EguiNiceSettings::new()
-                .with_tile("Lua Plugin Host")
+                .with_tile("Lumina DSP")
                 .with_resize_hint(RESIZE_HINT),
             app,
         )
@@ -145,7 +145,7 @@ impl LuaEditor {
 
     fn render_header(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.heading("Lua Plugin Host");
+            ui.heading("Lumina DSP");
             ui.label(format!("({})", self.kind.as_str()));
             if ui.button("Reload script").clicked() {
                 self.params.request_reload();

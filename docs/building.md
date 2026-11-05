@@ -34,9 +34,9 @@ that has a usable toolchain:
 
 The script writes platform folders and ZIP files under `dist/`:
 
-- Linux: `dist/linux/{raw,clap,vst3}` and `dist/lua-plugin-host-linux-x86_64.zip`.
-- Windows: `dist/windows/{raw,clap,vst3}` and `dist/lua-plugin-host-windows-x86_64.zip`.
-- macOS: `dist/macos/{raw,clap,vst3}` and `dist/lua-plugin-host-macos-universal.zip`.
+- Linux: `dist/linux/{raw,clap,vst3}` and `dist/lumina-dsp-linux-x86_64.zip`.
+- Windows: `dist/windows/{raw,clap,vst3}` and `dist/lumina-dsp-windows-x86_64.zip`.
+- macOS: `dist/macos/{raw,clap,vst3}` and `dist/lumina-dsp-macos-universal.zip`.
 
 On macOS, CLAP and VST3 outputs are bundles containing a universal executable,
 `Contents/Info.plist`, and `Contents/PkgInfo`. The script uses only Bash 3.2-compatible
@@ -81,7 +81,7 @@ The current packaged outputs are:
 - `dist/windows/clap/*.clap`
 - `dist/windows/vst3/*.vst3/Contents/x86_64-win/*.vst3`
 - `dist/windows/raw/*.dll`
-- `dist/lua-plugin-host-windows-x86_64.zip`
+- `dist/lumina-dsp-windows-x86_64.zip`
 
 The bundles are generated artifacts and are not automatically installed into a
 DAW's plugin scan folders. Copy the desired CLAP file or complete VST3 bundle to a

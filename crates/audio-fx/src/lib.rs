@@ -25,7 +25,7 @@ impl Default for LuaAudioFx {
 }
 
 impl Plugin for LuaAudioFx {
-    const NAME: &'static str = "Lua Audio FX";
+    const NAME: &'static str = "Lumina DSP Audio FX";
     const VENDOR: &'static str = "DayDRM software";
     const URL: &'static str = "https://example.com";
     const EMAIL: &'static str = "noreply@example.com";

@@ -260,6 +260,19 @@ impl LuaHost {
                 Ok(table)
             })?,
         )?;
+
+        let waveform_params = self.params.clone();
+        host_table.set(
+            "waveform_trace",
+            lua.create_function(move |lua, ()| {
+                let values = waveform_params.waveform_trace();
+                let table = lua.create_table()?;
+                for (index, value) in values.iter().enumerate() {
+                    table.set(index + 1, *value as f64)?;
+                }
+                Ok(table)
+            })?,
+        )?;
         let globals = lua.globals();
         globals.set("host", &host_table)?;
         let defaults_open = install_params_api(&lua, &globals, self.params.clone())?;
@@ -627,6 +640,11 @@ impl LuaHost {
             loaded.voice_tables.retain(|id, _| voices.contains(*id));
         }
         let peak = access.peak();
+        if self.params.editor_open() && access.num_channels() > 0 {
+            let num_samples = access.num_samples();
+            self.params
+                .push_waveform_block(num_samples, |sample| access.get(0, sample).unwrap_or(0.0));
+        }
         self.audio_bridge.clear();
 
         if self.params.editor_open() {
@@ -1767,6 +1785,27 @@ mod tests {
         })
     }
 
+    fn count_commands(
+        commands: &[UiCommand],
+        predicate: impl Fn(&UiCommand) -> bool + Copy,
+    ) -> usize {
+        commands
+            .iter()
+            .map(|command| {
+                usize::from(predicate(command))
+                    + match command {
+                        UiCommand::Row(children)
+                        | UiCommand::Column(children)
+                        | UiCommand::Group { children, .. }
+                        | UiCommand::Collapsing { children, .. } => {
+                            count_commands(children, predicate)
+                        }
+                        _ => 0,
+                    }
+            })
+            .sum()
+    }
+
     #[test]
     fn wave_api_matches_expected_shapes() {
         let lua = Lua::new();
@@ -2040,6 +2079,22 @@ mod tests {
             command,
             UiCommand::Knob { index: 1, .. }
         )));
+        assert!(has_command(&commands, |command| matches!(
+            command,
+            UiCommand::RadioParam { index: 15, choices, .. } if choices.len() == 7
+        )));
+        assert!(has_command(&commands, |command| matches!(
+            command,
+            UiCommand::Graph { .. }
+        )));
+        assert_eq!(
+            count_commands(&commands, |command| matches!(
+                command,
+                UiCommand::Graph { .. }
+            )),
+            3,
+            "the acid UI should show transfer, single-cycle, and live-waveform graphs"
+        );
 
         let loaded = host.loaded.as_ref().expect("extension should be loaded");
         let voice_fn = loaded
@@ -2231,8 +2286,8 @@ mod tests {
             ),
             (
                 PluginKind::AudioFx,
-                include_str!("../../../factory/audio-fx/saturator.lua"),
-                6.0,
+                include_str!("../../../factory/audio-fx/distortion-suite.lua"),
+                0.0,
             ),
         ];
 

@@ -24,7 +24,7 @@ impl Default for LuaInstrument {
 }
 
 impl Plugin for LuaInstrument {
-    const NAME: &'static str = "Lua Instrument";
+    const NAME: &'static str = "Lumina DSP Instrument";
     const VENDOR: &'static str = "DayDRM software";
     const URL: &'static str = "https://example.com";
     const EMAIL: &'static str = "noreply@example.com";

@@ -67,6 +67,102 @@ impl Waveform {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DistortionMode {
+    Saturator,
+    Bitcrush,
+    Tube,
+    Tape,
+    Overdrive,
+    Fuzz,
+    Diode,
+}
+
+impl DistortionMode {
+    fn parse(value: &str) -> mlua::Result<Self> {
+        match value {
+            "saturator" => Ok(Self::Saturator),
+            "bitcrush" | "bitcrush_downsample" => Ok(Self::Bitcrush),
+            "tube" => Ok(Self::Tube),
+            "tape" => Ok(Self::Tape),
+            "overdrive" => Ok(Self::Overdrive),
+            "fuzz" => Ok(Self::Fuzz),
+            "diode" => Ok(Self::Diode),
+            _ => Err(mlua::Error::RuntimeError(format!(
+                "unknown oscillator distortion mode: {value}"
+            ))),
+        }
+    }
+}
+
+fn distort_sample(mode: DistortionMode, value: f64, bias: f64, character: f64, bits: u32) -> f64 {
+    match mode {
+        DistortionMode::Saturator => ((value + bias * 0.15) * (1.0 + character * 4.0)).tanh(),
+        DistortionMode::Bitcrush => {
+            let levels = 2.0_f64.powi(bits as i32 - 1);
+            (value.clamp(-1.0, 1.0) * levels + 0.5).floor() / levels
+        }
+        DistortionMode::Tube => {
+            let asymmetric = value + bias * 0.2;
+            if asymmetric >= 0.0 {
+                (asymmetric * (1.2 + character * 2.0)).tanh()
+            } else {
+                (asymmetric * (0.75 + character * 1.25)).tanh()
+            }
+        }
+        DistortionMode::Tape => {
+            let soft = ((value + bias * 0.1) * 1.35).tanh();
+            let compressed = value.clamp(-1.0, 1.0);
+            soft * (1.0 - character * 0.25) + compressed * character * 0.25
+        }
+        DistortionMode::Overdrive => {
+            let threshold = 1.0 - character * 0.9;
+            value.clamp(-threshold, threshold) / threshold
+        }
+        DistortionMode::Fuzz => {
+            let fuzz = value * (2.0 + character * 12.0) + bias * 0.2;
+            if fuzz.abs() < 0.015 { 0.0 } else { fuzz.tanh() }
+        }
+        DistortionMode::Diode => {
+            let diode = value + bias * 0.15;
+            let excess = diode.abs() - (0.05 + character * 0.35);
+            if excess <= 0.0 {
+                0.0
+            } else {
+                let polarity = if diode < 0.0 { -1.0 } else { 1.0 };
+                polarity * (1.0 - (-excess * (3.0 + character * 15.0)).exp())
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_distortion(
+    input: f64,
+    channel: usize,
+    mode: DistortionMode,
+    drive: f64,
+    mix: f64,
+    bias: f64,
+    character: f64,
+    bits: u32,
+    downsample: usize,
+    held: &mut [f64; 3],
+    counter: &mut [usize; 3],
+) -> f64 {
+    let driven = input * drive;
+    let wet = if mode == DistortionMode::Bitcrush {
+        if counter[channel] == 0 {
+            held[channel] = distort_sample(mode, driven, bias, character, bits);
+        }
+        counter[channel] = (counter[channel] + 1) % downsample;
+        held[channel]
+    } else {
+        distort_sample(mode, driven, bias, character, bits)
+    };
+    input + (wet - input) * mix
+}
+
 fn next_noise(state: &mut u32) -> f64 {
     let mut value = *state;
     value ^= value << 13;
@@ -544,6 +640,16 @@ struct Oscillator {
     pitch_drop_semitones: f64,
     pitch_drop_decay_seconds: f64,
     pitch_drop_level: f64,
+    distortion_mode: DistortionMode,
+    distortion_drive_db: f64,
+    distortion_envelope_depth_db: f64,
+    distortion_mix: f64,
+    distortion_bias: f64,
+    distortion_character: f64,
+    distortion_bits: u32,
+    distortion_downsample: usize,
+    distortion_hold: [f64; 3],
+    distortion_counter: [usize; 3],
     noise_state: NoiseState,
     filters: [FilterStage; 2],
 }
@@ -564,6 +670,16 @@ impl Oscillator {
             pitch_drop_semitones: 0.0,
             pitch_drop_decay_seconds: 0.03,
             pitch_drop_level: 0.0,
+            distortion_mode: DistortionMode::Saturator,
+            distortion_drive_db: 0.0,
+            distortion_envelope_depth_db: 0.0,
+            distortion_mix: 0.0,
+            distortion_bias: 0.0,
+            distortion_character: 0.35,
+            distortion_bits: 8,
+            distortion_downsample: 1,
+            distortion_hold: [0.0; 3],
+            distortion_counter: [0; 3],
             noise_state: NoiseState::new(NEXT_NOISE_SEED.fetch_add(0x9e37_79b9, Ordering::Relaxed)),
             filters: [FilterStage::default(); 2],
         }
@@ -599,6 +715,38 @@ impl Oscillator {
         } else {
             0.0
         };
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn set_distortion(
+        &mut self,
+        mode: &str,
+        drive_db: f64,
+        envelope_depth_db: f64,
+        mix: f64,
+        bias: f64,
+        character: f64,
+        bits: u32,
+        downsample: usize,
+    ) -> mlua::Result<()> {
+        if ![drive_db, envelope_depth_db, mix, bias, character]
+            .iter()
+            .all(|value| value.is_finite())
+        {
+            return Err(mlua::Error::RuntimeError(
+                "distortion controls must be finite".to_string(),
+            ));
+        }
+
+        self.distortion_mode = DistortionMode::parse(mode)?;
+        self.distortion_drive_db = drive_db.clamp(0.0, 36.0);
+        self.distortion_envelope_depth_db = envelope_depth_db.clamp(0.0, 36.0);
+        self.distortion_mix = mix.clamp(0.0, 1.0);
+        self.distortion_bias = bias.clamp(-1.0, 1.0);
+        self.distortion_character = character.clamp(0.0, 1.0);
+        self.distortion_bits = bits.clamp(1, 16);
+        self.distortion_downsample = downsample.clamp(1, 32);
+        Ok(())
     }
 
     fn render(&mut self, frequency: f64, sample_rate: f64, gain: f64) {
@@ -650,6 +798,16 @@ impl Oscillator {
         let pitch_drop_semitones = self.pitch_drop_semitones;
         let pitch_drop_decay_seconds = self.pitch_drop_decay_seconds;
         let mut pitch_drop_level = self.pitch_drop_level;
+        let distortion_mode = self.distortion_mode;
+        let distortion_base_drive = 10.0_f64.powf(self.distortion_drive_db / 20.0);
+        let distortion_envelope_drive = 10.0_f64.powf(self.distortion_envelope_depth_db / 20.0);
+        let distortion_mix = self.distortion_mix;
+        let distortion_bias = self.distortion_bias;
+        let distortion_character = self.distortion_character;
+        let distortion_bits = self.distortion_bits;
+        let distortion_downsample = self.distortion_downsample;
+        let distortion_hold = &mut self.distortion_hold;
+        let distortion_counter = &mut self.distortion_counter;
         let filters = &mut self.filters;
         let phases = &mut self.phases;
         let noise_state = &mut self.noise_state;
@@ -728,6 +886,68 @@ impl Oscillator {
                         right = filter.process(1, right, cutoff, sample_rate);
                         if channels > 2 {
                             mono = filter.process(2, mono, cutoff, sample_rate);
+                        }
+                    }
+                }
+
+                if distortion_mix > 0.0 {
+                    let drive =
+                        distortion_base_drive * distortion_envelope_drive.powf(envelope_level);
+                    if channels == 1 {
+                        mono = apply_distortion(
+                            mono,
+                            0,
+                            distortion_mode,
+                            drive,
+                            distortion_mix,
+                            distortion_bias,
+                            distortion_character,
+                            distortion_bits,
+                            distortion_downsample,
+                            distortion_hold,
+                            distortion_counter,
+                        );
+                    } else if channels >= 2 {
+                        left = apply_distortion(
+                            left,
+                            0,
+                            distortion_mode,
+                            drive,
+                            distortion_mix,
+                            distortion_bias,
+                            distortion_character,
+                            distortion_bits,
+                            distortion_downsample,
+                            distortion_hold,
+                            distortion_counter,
+                        );
+                        right = apply_distortion(
+                            right,
+                            1,
+                            distortion_mode,
+                            drive,
+                            distortion_mix,
+                            distortion_bias,
+                            distortion_character,
+                            distortion_bits,
+                            distortion_downsample,
+                            distortion_hold,
+                            distortion_counter,
+                        );
+                        if channels > 2 {
+                            mono = apply_distortion(
+                                mono,
+                                2,
+                                distortion_mode,
+                                drive,
+                                distortion_mix,
+                                distortion_bias,
+                                distortion_character,
+                                distortion_bits,
+                                distortion_downsample,
+                                distortion_hold,
+                                distortion_counter,
+                            );
                         }
                     }
                 }
@@ -846,6 +1066,33 @@ impl UserData for Oscillator {
             this.clear_filter();
             Ok(())
         });
+
+        methods.add_method_mut(
+            "set_distortion",
+            |_,
+             this,
+             (mode, drive_db, envelope_depth_db, mix, bias, character, bits, downsample): (
+                String,
+                f64,
+                f64,
+                f64,
+                f64,
+                f64,
+                u32,
+                usize,
+            )| {
+                this.set_distortion(
+                    &mode,
+                    drive_db,
+                    envelope_depth_db,
+                    mix,
+                    bias,
+                    character,
+                    bits,
+                    downsample,
+                )
+            },
+        );
 
         methods.add_method_mut(
             "set_pitch_drop",
@@ -1027,6 +1274,10 @@ mod tests {
             osc:set_rm(1.4, 0.5)
             osc:set_lowpass(1200, 0.4)
             osc:set_lowpass_2(6000, 0.2)
+            osc:set_distortion("tube", 18, 12, 0.5, 0.1, 0.4, 8, 4)
+            assert(not pcall(function()
+                osc:set_distortion("invalid", 0, 0, 0, 0, 0, 8, 1)
+            end))
             osc:set_pitch_drop(18, 0.03)
             osc:render(440, 44100, 0.25)
 
@@ -1087,6 +1338,28 @@ mod tests {
         }
 
         assert!(output_energy < input_energy * 0.1);
+    }
+
+    #[test]
+    fn distortion_modes_produce_finite_bounded_curves() {
+        for mode in [
+            DistortionMode::Saturator,
+            DistortionMode::Bitcrush,
+            DistortionMode::Tube,
+            DistortionMode::Tape,
+            DistortionMode::Overdrive,
+            DistortionMode::Fuzz,
+            DistortionMode::Diode,
+        ] {
+            let output = distort_sample(mode, 1.4, 0.2, 0.6, 8);
+            assert!(output.is_finite());
+            assert!((-1.0..=1.0).contains(&output));
+        }
+
+        assert_eq!(
+            distort_sample(DistortionMode::Bitcrush, 0.3, 0.0, 0.0, 2),
+            0.5
+        );
     }
 
     #[test]

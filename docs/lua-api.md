@@ -22,7 +22,7 @@ not shared.
 Opening a plugin editor creates this library on first use:
 
 ```text
-Documents/Lua Plugin Host/
+Documents/Lumina DSP/
   extensions/
     synth/
     audio-fx/
@@ -148,6 +148,7 @@ end
 | `host.sidechain_channel_meter(channel?)` | Per-channel sidechain peak. |
 | `host.level_trace()` | Recent input block-peak history (up to 128 values), as a list. |
 | `host.gain_trace()` | Recent extension-recorded history (up to 128 values), as a list. |
+| `host.waveform_trace()` | Recent output samples from channel 1 (up to 256 values), collected only while the editor is open. |
 | `host.trace(value)` | Records a value in the history returned by `host.gain_trace()`. Records are ignored while the editor is closed. |
 
 Meter and graph telemetry is only collected while the editor is open. Meter values
@@ -328,6 +329,7 @@ Rust for every output sample; oscillator frequency does not affect their spectru
 - `osc:set_lowpass(cutoff_hz, resonance)` enables a two-pole low-pass filter. Resonance is normalized to `0..1`.
 - `osc:set_lowpass_2(cutoff_hz, resonance)` enables a second low-pass stage in series.
 - `osc:clear_filter()` disables the filter and clears its state.
+- `osc:set_distortion(model, drive_db, envelope_depth_db, mix, bias, character, bits, downsample)` enables a Rust-rendered distortion stage after oscillator filters. Models are `"saturator"`, `"bitcrush"`, `"tube"`, `"tape"`, `"overdrive"`, `"fuzz"`, and `"diode"`. The envelope adds up to 36 dB to drive per sample; mix is `0..1`, bias is `-1..1`, character is `0..1`, bit depth is `1..16`, and downsample factor is `1..32`. The last two controls affect bitcrush mode.
 - `osc:set_pitch_drop(semitones, decay_seconds)` starts a Rust-rendered downward pitch sweep for subsequent blocks. It begins at `frequency_hz * 2^(semitones / 12)` and exponentially falls to the requested frequency. Semitones clamp to `0..48`, decay to `0.001..5` seconds. Call it once when triggering a note, not every block.
 - `osc:render(frequency_hz, sample_rate, gain?)` renders the current block and adds the result to the output buffer. Gain is linear and defaults to `1`.
 - `osc:render_env(frequency_hz, sample_rate, gain, envelope)` renders with the envelope applied per sample in Rust. It advances that envelope; do not also call `envelope:process()` for the same samples.

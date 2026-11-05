@@ -3,12 +3,12 @@
   "api_version": 1,
   "id": "com.daydrm.acid-303",
   "name": "Acid 303",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "creator": {
     "id": "daydrm",
     "name": "DayDRM software"
   },
-  "description": "A modular TB-303-inspired mono synth.",
+  "description": "A modular TB-303-inspired mono synth with envelope-modulated distortion.",
   "plugin_types": ["instrument"],
   "entry": "main.lua"
 }

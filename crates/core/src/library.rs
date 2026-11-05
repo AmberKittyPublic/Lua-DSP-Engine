@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use crate::params::PluginKind;
 use serde::{Deserialize, Serialize};
 
-pub const LIBRARY_FOLDER: &str = "Lua Plugin Host";
+pub const LIBRARY_FOLDER: &str = "Lumina DSP";
 pub const SCRIPTS_FOLDER: &str = "scripts";
 pub const EXTENSIONS_FOLDER: &str = "extensions";
 pub const PRESETS_FOLDER: &str = "presets";
@@ -82,8 +82,8 @@ const FACTORY_SCRIPTS: &[FactoryScript] = &[
     },
     FactoryScript {
         kind: PluginKind::AudioFx,
-        name: "saturator.lua",
-        source: include_str!("../../../factory/audio-fx/saturator.lua"),
+        name: "distortion-suite.lua",
+        source: include_str!("../../../factory/audio-fx/distortion-suite.lua"),
     },
     FactoryScript {
         kind: PluginKind::MidiFx,

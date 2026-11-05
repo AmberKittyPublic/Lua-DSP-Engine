@@ -18,7 +18,7 @@ automation, persistence, and the UI/audio thread boundary.
 
 ## Current Baseline
 
-The current loader creates `Documents/Lua Plugin Host/extensions/{synth,audio-fx,midi-fx}`,
+The current loader creates `Documents/Lumina DSP/extensions/{synth,audio-fx,midi-fx}`,
 `presets/`, and extension cache directories. Bundled factory `.lua` scripts are
 installed directly into the matching extension-type folder, while manifest-based
 packages such as `acid-303` are installed as directories. The editor can load a
@@ -34,7 +34,7 @@ reserve an application-specific subfolder for cache and temporary files:
 
 ```text
 Documents/
-  Lua Plugin Host/
+  Lumina DSP/
     extensions/
       synth/
         <extension-id>.lua

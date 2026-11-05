@@ -1,4 +1,4 @@
-# Lua Plugin Host
+# Lumina DSP
 
 A Luau-powered audio plugin workspace with three CLAP/VST3 plugins:
 
@@ -9,7 +9,7 @@ A Luau-powered audio plugin workspace with three CLAP/VST3 plugins:
 Each plugin shares the Lua runtime, 64 automatable macros, script library, and UI
 API from `lua-plugin-core`. Load scripts from the plugin window with the OS file
 picker, and the selected source is persisted with the plugin state. On first open,
-the plugin creates `Documents/Lua Plugin Host/extensions/{synth,audio-fx,midi-fx}`
+the plugin creates `Documents/Lumina DSP/extensions/{synth,audio-fx,midi-fx}`
 and a `presets` folder, then installs bundled factory scripts into the matching
 extensions folder without overwriting existing files.
 
@@ -38,7 +38,7 @@ cargo build --workspace --release
 ```
 
 The plugin editor contains a **Script** panel. **Load script...** opens the OS file
-picker in the matching `Documents/Lua Plugin Host/extensions/` folder;
+picker in the matching `Documents/Lumina DSP/extensions/` folder;
 **Reset to default** restores the built-in example script. Existing instances keep
 their saved script source until another script is loaded or defaults are reset;
 changing a library file does not update instances that already loaded it. Scripts
