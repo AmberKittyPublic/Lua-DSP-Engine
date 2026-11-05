@@ -34,9 +34,13 @@ that has a usable toolchain:
 
 The script writes platform folders and ZIP files under `dist/`:
 
-- `dist/linux`
-- `dist/windows`
-- `dist/macos`
+- Linux: `dist/linux/{raw,clap,vst3}` and `dist/lua-plugin-host-linux-x86_64.zip`.
+- Windows: `dist/windows/{raw,clap,vst3}` and `dist/lua-plugin-host-windows-x86_64.zip`.
+- macOS: `dist/macos/{raw,clap,vst3}` and `dist/lua-plugin-host-macos-universal.zip`.
+
+On macOS, CLAP and VST3 outputs are bundles containing a universal executable,
+`Contents/Info.plist`, and `Contents/PkgInfo`. The script uses only Bash 3.2-compatible
+syntax so it works with the system Bash shipped with macOS.
 
 The default `all` mode builds targets with an installed Rust target and available
 linker, and skips unavailable cross-targets. macOS packaging creates CLAP and VST3

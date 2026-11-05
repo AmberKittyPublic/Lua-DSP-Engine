@@ -332,7 +332,11 @@ impl LuaHost {
         if buffer.samples() == 0 {
             return;
         }
-        let factor = self.params.oversampling_factor();
+        let factor = if self.kind == PluginKind::Instrument {
+            self.params.oversampling_factor()
+        } else {
+            1
+        };
         if factor <= 1 || buffer.samples() < 256 {
             let main = buffer.as_slice();
             let aux_slices = if aux.inputs.is_empty() {
@@ -1493,6 +1497,17 @@ fn install_ui_api(
 
     let ui = builder.clone();
     table.set(
+        "colored_meter",
+        lua.create_function(
+            move |_, (value, label, color): (f32, Option<String>, String)| {
+                ui.lock().colored_meter(value, label, color);
+                Ok(())
+            },
+        )?,
+    )?;
+
+    let ui = builder.clone();
+    table.set(
         "compression_curve",
         lua.create_function(move |_, (threshold, ratio, knee): (f32, f32, f32)| {
             ui.lock().compression_curve(threshold, ratio, knee);
@@ -1505,15 +1520,6 @@ fn install_ui_api(
         "compressor_graph",
         lua.create_function(move |_, (threshold, ratio, knee): (f32, f32, f32)| {
             ui.lock().compressor_graph(threshold, ratio, knee);
-            Ok(())
-        })?,
-    )?;
-
-    let ui = builder.clone();
-    table.set(
-        "waveform",
-        lua.create_function(move |_, ()| {
-            ui.lock().waveform();
             Ok(())
         })?,
     )?;
@@ -1574,24 +1580,6 @@ fn install_ui_api(
         })?,
     )?;
 
-    let ui = builder.clone();
-    table.set(
-        "compression_curve",
-        lua.create_function(move |_, (threshold, ratio, knee): (f32, f32, f32)| {
-            ui.lock().compression_curve(threshold, ratio, knee);
-            Ok(())
-        })?,
-    )?;
-    let ui = builder.clone();
-    table.set(
-        "curve",
-        lua.create_function(
-            move |_, (drive, bias, shape, output): (f32, f32, f32, f32)| {
-                ui.lock().curve(drive, bias, shape, output);
-                Ok(())
-            },
-        )?,
-    )?;
     let ui = builder.clone();
     table.set(
         "row",

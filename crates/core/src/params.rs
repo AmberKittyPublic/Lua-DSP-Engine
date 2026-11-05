@@ -175,8 +175,6 @@ pub struct PluginParams {
     pub last_processing_latency_ms: AtomicU32,
     pub input_peak: AtomicU32,
     pub sidechain_peak: AtomicU32,
-    waveform: Mutex<Vec<f32>>,
-    sidechain_waveform: Mutex<Vec<f32>>,
     level_trace: [AtomicU32; TRACE_LEN],
     level_trace_write: AtomicUsize,
     gain_trace: [AtomicU32; TRACE_LEN],
@@ -216,8 +214,6 @@ impl Default for PluginParams {
             last_processing_latency_ms: AtomicU32::new(0.0f32.to_bits()),
             input_peak: AtomicU32::new(0.0f32.to_bits()),
             sidechain_peak: AtomicU32::new(0.0f32.to_bits()),
-            waveform: Mutex::new(Vec::new()),
-            sidechain_waveform: Mutex::new(Vec::new()),
             level_trace: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
             level_trace_write: AtomicUsize::new(0),
             gain_trace: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
@@ -458,22 +454,6 @@ impl PluginParams {
 
     pub fn sidechain_peak(&self) -> f32 {
         f32::from_bits(self.sidechain_peak.load(Ordering::Relaxed))
-    }
-
-    pub fn set_waveform(&self, samples: &[f32]) {
-        *self.waveform.lock() = samples.to_vec();
-    }
-
-    pub fn waveform(&self) -> Vec<f32> {
-        self.waveform.lock().clone()
-    }
-
-    pub fn set_sidechain_waveform(&self, samples: &[f32]) {
-        *self.sidechain_waveform.lock() = samples.to_vec();
-    }
-
-    pub fn sidechain_waveform(&self) -> Vec<f32> {
-        self.sidechain_waveform.lock().clone()
     }
 
     pub fn push_level_trace(&self, value: f32) {

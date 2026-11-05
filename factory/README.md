@@ -1,7 +1,7 @@
 # Factory Scripts
 
 These scripts are starting points for the three plugin types. The plugin copies
-them into `Documents/Lua Plugin Host/scripts/` on first open; choose
+them into `Documents/Lua Plugin Host/extensions/{synth,audio-fx,midi-fx}/` on first open; choose
 **Load script...** in the plugin's **Script** panel to open that folder and load
 one. To apply the values declared in a script's `params.set_defaults()` call,
 choose **Reset macros to script defaults**; loading a script otherwise preserves
@@ -30,11 +30,12 @@ existing macro values.
 - `audio-fx/stereo-delay.lua`: stereo feedback delay with optional ping-pong
   routing and subtle LFO modulation.
 - `audio-fx/stereo-compressor.lua`: linked stereo compressor with an external
-  sidechain blend control.
+  sidechain blend and soft-knee controls. Its extension computes the live level,
+  ducking, and transfer-curve series for the generic graph widget.
 - `audio-fx/stereo-reverb.lua`: stereo comb/allpass reverb with room, damping, wet,
   and width controls.
 - `audio-fx/saturator.lua`: soft-clipping saturator with drive, tone, output, and
-  dry/wet mix controls.
+  dry/wet mix controls. Its extension computes and plots the current transfer curve.
 
 All scripts use the shared 64 macro parameters; each script documents its macro
 assignments in its header.

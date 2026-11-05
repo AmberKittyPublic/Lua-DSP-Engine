@@ -9,9 +9,9 @@ A Luau-powered audio plugin workspace with three CLAP/VST3 plugins:
 Each plugin shares the Lua runtime, 64 automatable macros, script library, and UI
 API from `lua-plugin-core`. Load scripts from the plugin window with the OS file
 picker, and the selected source is persisted with the plugin state. On first open,
-the plugin creates `Documents/Lua Plugin Host/` with per-type script folders and a
-presets folder, then installs the bundled factory scripts into extensions/ without overwriting
-existing files.
+the plugin creates `Documents/Lua Plugin Host/extensions/{synth,audio-fx,midi-fx}`
+and a `presets` folder, then installs bundled factory scripts into the matching
+extensions folder without overwriting existing files.
 
 ## Documentation
 
@@ -38,11 +38,11 @@ cargo build --workspace --release
 ```
 
 The plugin editor contains a **Script** panel. **Load script...** opens the OS file
-picker in the matching `Documents/Lua Plugin Host/scripts/` folder;
+picker in the matching `Documents/Lua Plugin Host/extensions/` folder;
 **Reset to default** restores the built-in example script. Existing instances keep
 their saved script source until another script is loaded or defaults are reset;
 changing a library file does not update instances that already loaded it. Scripts
 may declare macro reset values; use **Reset macros to script defaults** when you
 want those values applied without changing the DAW's native defaults.
 
-For cross-compilation, multi-platform builds, and generated bundles, see [Building and testing](docs/building.md). Run `./build-all.sh` to build Linux and Windows locally; macOS is built when its toolchain is available.
+For cross-compilation, multi-platform builds, and generated bundles, see [Building and testing](docs/building.md). Run `./build-all.sh` to build targets whose toolchains are installed; unavailable cross-targets are skipped.

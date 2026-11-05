@@ -23,18 +23,20 @@ Opening a plugin editor creates this library on first use:
 
 ```text
 Documents/Lua Plugin Host/
-  scripts/
-    instrument/
+  extensions/
+    synth/
     audio-fx/
     midi-fx/
   presets/
 ```
 
-Bundled factory scripts are copied into the matching `scripts/<kind>/` folder only
-when a file with that name is missing; existing user copies are not overwritten.
-The **Load script...** button opens the OS file picker in that folder by default.
-The loaded source, file name, and path are saved in the plugin state, so moving the
-original file does not unload the script from an existing instance.
+Bundled factory `.lua` scripts are copied into the matching `extensions/<kind>/`
+folder only when a file with that name is missing; existing user copies are not
+overwritten. Instrument scripts use the `synth/` folder. The **Load script...**
+button opens the OS file picker in the matching extensions folder by default. The
+selected source, file name, and path are saved in plugin state, so moving the
+original file does not unload the script from an existing instance. Extension
+discovery/browsing and preset browsing are not implemented yet.
 
 ## Callback Summary
 
@@ -139,14 +141,18 @@ end
 | `host.voice_mode` | Effective instrument mode: `"mono"` or `"poly"`. |
 | `host.max_voices` | Effective maximum voice count. |
 | `host.meter()` | Last measured audio output peak in linear amplitude; it may exceed `1.0`. MIDI FX does not produce this meter. |
-| `host.input_meter()` | Last measured input peak in linear amplitude. |
-| `host.sidechain_meter()` | Last measured sidechain peak in linear amplitude. |
+| `host.input_meter()` | Last measured input peak in linear amplitude, refreshed while the editor is open. |
+| `host.sidechain_meter()` | Last measured sidechain peak in linear amplitude, refreshed while the editor is open. |
 | `host.input_channel_meter(channel?)` | Per-channel input peak. |
 | `host.output_channel_meter(channel?)` | Per-channel output peak. |
 | `host.sidechain_channel_meter(channel?)` | Per-channel sidechain peak. |
-| `host.level_trace()` | Recent input peak history as a list. |
-| `host.gain_trace()` | Recent gain-reduction history as a list. |
-| `host.trace(value)` | Records a value into the gain-reduction history. |
+| `host.level_trace()` | Recent input block-peak history (up to 128 values), as a list. |
+| `host.gain_trace()` | Recent extension-recorded history (up to 128 values), as a list. |
+| `host.trace(value)` | Records a value in the history returned by `host.gain_trace()`. Records are ignored while the editor is closed. |
+
+Meter and graph telemetry is only collected while the editor is open. Meter values
+are linear amplitudes and may exceed `1.0`. Channel arguments are zero-based; the
+current meter display supports the first two channels.
 
 Transport fields are updated for processing callbacks. Do not assume a meaningful
 `host.num_samples` or transport position during `draw()`.
@@ -156,7 +162,7 @@ Transport fields are updated for processing callbacks. Do not assume a meaningfu
 - `params.count()` returns `64`.
 - `params.get(index)` reads a macro value. It returns the normalized `0..1` value unless a script scale has been declared, in which case it returns the scaled float or integer value.
 - `params.set_range(index, scale)` declares how a normalized host macro maps to a script value.
-- `params.set_oversampling(factor)` sets the processing oversampling factor, clamped to `1..16` (default `2`).
+- `params.set_oversampling(factor)` sets the instrument processing oversampling factor, clamped to `1..16` (default `1`). Audio FX and MIDI FX remain at `1x`; only instruments expose the editor's oversampling selector. Factors above `1x` increase CPU use and currently allocate resampling buffers per block.
 - `params.default(index)` reads the current script-declared reset value in the script's scale.
 - `params.set_default(index, value)` declares one script reset value.
 - `params.set_defaults({ [index] = value, ... })` declares several at once.
@@ -404,16 +410,12 @@ expose arbitrary drawing.
 - `ui.toggle(index, label?)` binds a checkbox to macro `1..64`. It reads the normalized macro as on at `0.5` or above and writes `0` or `1`.
 - `ui.radio_param(index, label, choices)` binds a radio group to macro `1..64`. It requires at least two string choices; the choices map evenly from normalized macro value `0` to `1`.
 - `ui.meter(value, label?)` draws a progress bar clamped to `0..1`.
-- `ui.colored_meter(value, label?, color)` draws a progress bar with the supplied fill color.
+- `ui.colored_meter(value, label?, color)` draws a progress bar with the supplied named or hex fill color.
 - `ui.vertical_meter(value)` draws a vertical level meter with green/orange/red segments.
-- `ui.curve(drive, bias, shape, output)` draws a small input/output transfer curve for a waveshaper.
 - `ui.colored_heading(text, color)` draws a heading in the named or hex color.
 - `ui.graph(function() ... end)` allocates a graph area; child `ui.plot(...)` calls draw series in that area.
-- `ui.plot(values, color?)` draws a polyline series in the current graph area.
-- `ui.level_graph()` draws input level and gain-reduction traces.
-- `ui.compression_curve(threshold, ratio, knee)` draws a compressor transfer curve.
-- `ui.compressor_graph(threshold, ratio, knee)` draws level traces with a compression curve overlay.
-- `ui.waveform()` draws the last audio block waveform.
+- `ui.plot(values, color?)` draws a polyline series in the current graph area. Values are mapped from `0..1`; extensions compute and submit their own graph series.
+- `ui.level_graph()`, `ui.compression_curve(threshold, ratio, knee)`, and `ui.compressor_graph(threshold, ratio, knee)` are convenience widgets for level history and compressor transfer curves. Prefer `ui.graph()`/`ui.plot()` when the extension should own the display logic.
 - `ui.row(function() ... end)` lays out child widgets horizontally.
 - `ui.column(function() ... end)` lays out child widgets vertically.
 - `ui.group(function() ... end)` or `ui.group(title, function() ... end)` draws its children in a grouped frame with an optional title.

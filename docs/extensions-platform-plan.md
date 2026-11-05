@@ -18,11 +18,13 @@ automation, persistence, and the UI/audio thread boundary.
 
 ## Current Baseline
 
-The implemented script loader currently creates
-`Documents/Lua Plugin Host/scripts/{instrument,audio-fx,midi-fx}` plus a `presets`
-folder and copies bundled factory scripts there. The layout below is the target
-extension/preset platform; migration should account for these existing script files
-rather than discarding or silently duplicating them.
+The current loader creates `Documents/Lua Plugin Host/extensions/{synth,audio-fx,midi-fx}`,
+`presets/`, and extension cache directories. Bundled factory `.lua` scripts are
+installed directly into the matching extension-type folder, while manifest-based
+packages such as `acid-303` are installed as directories. The editor can load a
+selected `.lua` file or extension manifest, but it does not yet provide extension
+discovery/browser or preset browsing. The layout below remains the target for the
+full extension and preset platform.
 
 ## Proposed User Data Layout
 

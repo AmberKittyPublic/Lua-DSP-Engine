@@ -653,51 +653,6 @@ fn render_commands(
                     }
                 }
             }
-            UiCommand::Waveform => {
-                let output = params.waveform();
-                let sidechain = params.sidechain_waveform();
-                let size = egui::vec2(320.0, 120.0);
-                let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-                let painter = ui.painter_at(rect);
-                painter.rect_stroke(
-                    rect,
-                    0.0,
-                    egui::Stroke::new(1.0, egui::Color32::GRAY),
-                    egui::StrokeKind::Inside,
-                );
-                if !output.is_empty() {
-                    let mut points = Vec::with_capacity(output.len());
-                    for (index, value) in output.iter().enumerate() {
-                        let x = rect.left()
-                            + index as f32 / (output.len().saturating_sub(1).max(1) as f32)
-                                * rect.width();
-                        let y = rect.center().y - value.clamp(-1.0, 1.0) * 0.5 * rect.height();
-                        points.push(egui::pos2(x, y));
-                    }
-                    painter.add(egui::Shape::line(
-                        points,
-                        egui::Stroke::new(1.5, egui::Color32::GREEN),
-                    ));
-                }
-                if !sidechain.is_empty() {
-                    let mut points = Vec::with_capacity(sidechain.len());
-                    for (index, value) in sidechain.iter().enumerate() {
-                        let x = rect.left()
-                            + index as f32 / (sidechain.len().saturating_sub(1).max(1) as f32)
-                                * rect.width();
-                        let y = rect.center().y - value.clamp(-1.0, 1.0) * 0.5 * rect.height();
-                        points.push(egui::pos2(x, y));
-                    }
-                    painter.add(egui::Shape::line(
-                        points,
-                        egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 180, 0)),
-                    ));
-                }
-                painter.line_segment(
-                    [rect.left_center(), rect.right_center()],
-                    egui::Stroke::new(1.0, egui::Color32::DARK_GRAY),
-                );
-            }
             UiCommand::LevelGraph => {
                 let levels = params.level_trace();
                 let gains = params.gain_trace();
@@ -858,47 +813,6 @@ fn render_commands(
                 ));
                 painter.line_segment(
                     [rect.left_bottom(), rect.right_bottom()],
-                    egui::Stroke::new(1.0, egui::Color32::DARK_GRAY),
-                );
-            }
-            UiCommand::Curve {
-                drive,
-                bias,
-                shape,
-                output,
-            } => {
-                let size = egui::vec2(180.0, 180.0);
-                let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-                let painter = ui.painter_at(rect);
-                painter.rect_stroke(
-                    rect,
-                    0.0,
-                    egui::Stroke::new(1.0, egui::Color32::GRAY),
-                    egui::StrokeKind::Inside,
-                );
-                let drive = 10.0f32.powf(drive / 20.0);
-                let output = 10.0f32.powf(output / 20.0);
-                let mut points = Vec::with_capacity(129);
-                for index in 0..=128 {
-                    let x = -1.0 + 2.0 * index as f32 / 128.0;
-                    let driven = (x + bias * 0.15) * drive;
-                    let saturation = 1.0 + shape * 4.0;
-                    let saturated = (driven * saturation).tanh();
-                    let y = (saturated * output).clamp(-1.0, 1.0);
-                    let px = rect.left() + (x + 1.0) * 0.5 * rect.width();
-                    let py = rect.center().y - y * 0.5 * rect.height();
-                    points.push(egui::pos2(px, py));
-                }
-                painter.add(egui::Shape::line(
-                    points,
-                    egui::Stroke::new(2.0, egui::Color32::RED),
-                ));
-                painter.line_segment(
-                    [rect.left_center(), rect.right_center()],
-                    egui::Stroke::new(1.0, egui::Color32::DARK_GRAY),
-                );
-                painter.line_segment(
-                    [rect.center_top(), rect.center_bottom()],
                     egui::Stroke::new(1.0, egui::Color32::DARK_GRAY),
                 );
             }

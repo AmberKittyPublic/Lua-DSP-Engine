@@ -119,7 +119,21 @@ function draw()
             end)
         end)
 
-        ui.curve(params.get(1), params.get(5), params.get(7), params.get(3))
+        ui.graph(function()
+            local drive = 10.0 ^ (params.get(1) / 20.0)
+            local bias = params.get(5)
+            local shape = params.get(7)
+            local output = 10.0 ^ (params.get(3) / 20.0)
+            local curve = {}
+            for index = 0, 128 do
+                local input = -1.0 + 2.0 * index / 128.0
+                local driven = (input + bias * 0.15) * drive
+                local saturated = math.tanh(driven * (1.0 + shape * 4.0))
+                local value = math.max(-1.0, math.min(1.0, saturated * output))
+                curve[index + 1] = (value + 1.0) * 0.5
+            end
+            ui.plot(curve, "red")
+        end)
     end)
 
     ui.separator_horizontal()

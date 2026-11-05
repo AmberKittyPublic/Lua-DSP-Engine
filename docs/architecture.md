@@ -86,8 +86,13 @@ The custom editor exposes voice controls for the instrument, all macros, script
 loading controls, and script-defined UI commands. The script source, name, and
 selected path are persisted with the plugin state. On first open, the editor creates
 `Documents/Lua Plugin Host/` with `extensions/synth`, `extensions/audio-fx`,
-`extensions/midi-fx`, and `presets`, then copies in bundled factory scripts that are
-not already present.
+`extensions/midi-fx`, `presets`, and `cache/extensions`, then copies bundled factory
+scripts that are not already present.
+
+The editor's collapsible Debug panel shows block size and sample rate. Its latency
+measurement toggle is off by default; when enabled, it measures plugin callback
+execution time, not end-to-end MIDI-to-audio or device latency. Meter and graph
+telemetry is gathered only while the editor is open.
 
 ## Runtime Constraints
 
@@ -100,7 +105,8 @@ At 1x, the steady-state audio path avoids host-side locks and heap allocation.
 Optional editor telemetry is collected only while the editor is open and uses
 fixed-size atomic buffers. Oversampling above 1x is opt-in and currently adds
 resampling work and per-block allocations, so leave it at 1x for real-time-sensitive
-use.
+use. Oversampling defaults to 1x and is selectable only for instruments; audio FX
+and MIDI FX stay at 1x. The instrument selector offers 1x, 2x, 4x, 8x, and 16x.
 
 Prefer Rust-backed helpers such as `synth.osc("saw"):render(...)`,
 `osc:render_env()`, and `osc:render_filtered()` for per-sample synthesis, envelope,

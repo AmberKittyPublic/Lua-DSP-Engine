@@ -40,7 +40,6 @@ pub enum UiCommand {
         label: Option<String>,
         color: Option<String>,
     },
-    Waveform,
     VerticalMeter {
         value: f32,
     },
@@ -61,12 +60,6 @@ pub enum UiCommand {
         threshold: f32,
         ratio: f32,
         knee: f32,
-    },
-    Curve {
-        drive: f32,
-        bias: f32,
-        shape: f32,
-        output: f32,
     },
     Row(Vec<UiCommand>),
     Column(Vec<UiCommand>),
@@ -209,10 +202,6 @@ impl UiBuilder {
         });
     }
 
-    pub fn waveform(&mut self) {
-        self.push(UiCommand::Waveform);
-    }
-
     pub fn vertical_meter(&mut self, value: f32) {
         self.push(UiCommand::VerticalMeter { value });
     }
@@ -261,14 +250,6 @@ impl UiBuilder {
             threshold,
             ratio,
             knee,
-        });
-    }
-    pub fn curve(&mut self, drive: f32, bias: f32, shape: f32, output: f32) {
-        self.push(UiCommand::Curve {
-            drive,
-            bias,
-            shape,
-            output,
         });
     }
     pub fn begin_group(&mut self, title: Option<String>) {
