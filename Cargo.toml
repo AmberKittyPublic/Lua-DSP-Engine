@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+nice-plug = "0.4.2"
+nice-plug-egui = "0.6.0"
+egui = { version = "0.37.0", features = ["default_fonts"] }
+mlua = { version = "0.12.2", features = ["luau", "send"] }
+parking_lot = "0.12"
+serde = { version = "1", features = ["derive"] }
+lua-plugin-core = { path = "crates/core" }
