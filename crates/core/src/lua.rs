@@ -2,11 +2,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use mlua::{Function, Lua, Table, Value, VmState};
-use nice_plug::midi::{Channel, Key, VoiceID};
-use nice_plug::prelude::*;
-use parking_lot::Mutex;
-
 use crate::audio::{AudioBridge, BlockAccess, MidiOut};
 use crate::params::{
     MACRO_COUNT, MAX_VOICES, MacroScale, MacroScaleType, PluginKind, PluginParams,
@@ -14,6 +9,13 @@ use crate::params::{
 use crate::synth::install_synth_api;
 use crate::ui::{UiBuilder, UiCommand};
 use crate::voice::{Voice, VoiceManager};
+use mlua::{Function, Lua, Table, Value, VmState};
+use nice_plug::midi::{Channel, Key, VoiceID};
+use nice_plug::prelude::*;
+use parking_lot::Mutex;
+use rubato::{
+    Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
+};
 
 const MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 const LOAD_BUDGET: u32 = 4_000_000;
@@ -208,13 +210,13 @@ impl LuaHost {
                 let params = self.params.clone();
                 let index = $peaks;
                 lua.create_function(move |_, channel: Option<usize>| {
-                    let peaks = match index {
-                        0 => params.input_channel_peaks(),
-                        1 => params.output_channel_peaks(),
-                        _ => params.sidechain_channel_peaks(),
-                    };
                     let channel = channel.unwrap_or(0);
-                    Ok(peaks.get(channel).copied().unwrap_or(0.0) as f64)
+                    let peak = match index {
+                        0 => params.input_channel_peak(channel),
+                        1 => params.output_channel_peak(channel),
+                        _ => params.sidechain_channel_peak(channel),
+                    };
+                    Ok(peak as f64)
                 })?
             }};
         }
@@ -222,11 +224,13 @@ impl LuaHost {
         host_table.set("input_channel_meter", channel_meter_fn!(0, 0))?;
         host_table.set("output_channel_meter", channel_meter_fn!(1, 1))?;
         host_table.set("sidechain_channel_meter", channel_meter_fn!(2, 2))?;
-                let trace_params = self.params.clone();
+        let trace_params = self.params.clone();
         host_table.set(
             "trace",
             lua.create_function(move |_, value: f64| {
-                trace_params.push_gain_trace(value as f32);
+                if trace_params.editor_open() {
+                    trace_params.push_gain_trace(value as f32);
+                }
                 Ok(())
             })?,
         )?;
@@ -255,7 +259,8 @@ impl LuaHost {
                 }
                 Ok(table)
             })?,
-        )?;        let globals = lua.globals();
+        )?;
+        let globals = lua.globals();
         globals.set("host", &host_table)?;
         let defaults_open = install_params_api(&lua, &globals, self.params.clone())?;
         install_wave_api(&lua, &globals)?;
@@ -324,6 +329,153 @@ impl LuaHost {
         playing: bool,
         pos_beats: Option<f64>,
     ) {
+        if buffer.samples() == 0 {
+            return;
+        }
+        let factor = self.params.oversampling_factor();
+        if factor <= 1 || buffer.samples() < 256 {
+            let main = buffer.as_slice();
+            let aux_slices = if aux.inputs.is_empty() {
+                None
+            } else {
+                Some(aux.inputs[0].as_slice())
+            };
+            self.process_audio_slices(main, aux_slices, sample_rate, tempo, playing, pos_beats);
+            return;
+        }
+
+        let original_samples = buffer.samples();
+        let channels = buffer.channels().max(1);
+        let aux_channels = if aux.inputs.is_empty() {
+            0
+        } else {
+            aux.inputs[0].channels()
+        };
+
+        // Upsample input.
+        let mut up_main = vec![vec![0.0f32; original_samples * factor]; channels];
+        let params = SincInterpolationParameters {
+            sinc_len: 128,
+            f_cutoff: 0.95,
+            interpolation: SincInterpolationType::Linear,
+            oversampling_factor: 128,
+            window: WindowFunction::BlackmanHarris2,
+        };
+        let mut resampler =
+            SincFixedIn::<f32>::new(factor as f64, 1.0, params, original_samples, channels)
+                .expect("valid resampler");
+        let input: Vec<Vec<f32>> = (0..channels)
+            .map(|channel| buffer.as_slice()[channel].to_vec())
+            .collect();
+        let mut output = vec![vec![0.0f32; resampler.output_frames_max()]; channels];
+        let (_, up_frames) = resampler
+            .process_partial_into_buffer(Some(&input), &mut output, None)
+            .expect("upsampling should succeed");
+        let up_samples = up_frames.min(original_samples * factor);
+        for channel in 0..channels {
+            for sample in 0..up_samples {
+                up_main[channel][sample] = output[channel][sample];
+            }
+        }
+
+        // Upsample sidechain.
+        let mut up_aux = if aux_channels > 0 {
+            let mut up = vec![vec![0.0f32; up_samples]; aux_channels];
+            let aux_params = SincInterpolationParameters {
+                sinc_len: 128,
+                f_cutoff: 0.95,
+                interpolation: SincInterpolationType::Linear,
+                oversampling_factor: 128,
+                window: WindowFunction::BlackmanHarris2,
+            };
+            let mut resampler = SincFixedIn::<f32>::new(
+                factor as f64,
+                1.0,
+                aux_params,
+                original_samples,
+                aux_channels,
+            )
+            .expect("valid resampler");
+            let input: Vec<Vec<f32>> = (0..aux_channels)
+                .map(|channel| aux.inputs[0].as_slice()[channel].to_vec())
+                .collect();
+            let mut output = vec![vec![0.0f32; resampler.output_frames_max()]; aux_channels];
+            let (_, aux_frames) = resampler
+                .process_partial_into_buffer(Some(&input), &mut output, None)
+                .expect("upsampling should succeed");
+            let aux_up_samples = aux_frames.min(up_samples);
+            for channel in 0..aux_channels {
+                for sample in 0..aux_up_samples {
+                    up[channel][sample] = output[channel][sample];
+                }
+            }
+            Some(up)
+        } else {
+            None
+        };
+
+        // Prepare mutable slices.
+        let mut up_main_slices: Vec<&mut [f32]> = up_main
+            .iter_mut()
+            .map(|channel| channel.as_mut_slice())
+            .collect();
+        let mut up_aux_slices = up_aux.as_mut().map(|storage| {
+            storage
+                .iter_mut()
+                .map(|channel| channel.as_mut_slice())
+                .collect::<Vec<&mut [f32]>>()
+        });
+
+        self.process_audio_slices(
+            &mut up_main_slices,
+            up_aux_slices.as_deref_mut(),
+            sample_rate * factor as f32,
+            tempo,
+            playing,
+            pos_beats,
+        );
+
+        // Downsample output back into the original buffer.
+        let down_params = SincInterpolationParameters {
+            sinc_len: 128,
+            f_cutoff: 0.95,
+            interpolation: SincInterpolationType::Linear,
+            oversampling_factor: 128,
+            window: WindowFunction::BlackmanHarris2,
+        };
+        let mut down_resampler =
+            SincFixedIn::<f32>::new(1.0 / factor as f64, 1.0, down_params, up_samples, channels)
+                .expect("valid resampler");
+        let mut down_output = vec![vec![0.0f32; down_resampler.output_frames_max()]; channels];
+        let (_, down_frames) = down_resampler
+            .process_partial_into_buffer(Some(&up_main), &mut down_output, None)
+            .expect("downsampling should succeed");
+        let copy_frames = down_frames.min(original_samples);
+        for (channel, output) in down_output.iter().enumerate().take(channels) {
+            for (sample, value) in output.iter().enumerate().take(copy_frames) {
+                buffer.as_slice()[channel][sample] = *value;
+            }
+        }
+        // zero fill remainder if needed
+        for channel in 0..channels {
+            #[allow(clippy::needless_range_loop)]
+            for sample in copy_frames..original_samples {
+                buffer.as_slice()[channel][sample] = 0.0;
+            }
+        }
+
+        self.params.set_block_size(original_samples);
+    }
+
+    pub fn process_audio_slices(
+        &mut self,
+        main: &mut [&mut [f32]],
+        aux: Option<&mut [&mut [f32]]>,
+        sample_rate: f32,
+        tempo: Option<f64>,
+        playing: bool,
+        pos_beats: Option<f64>,
+    ) {
         self.maybe_reload();
 
         self.voices.configure(
@@ -341,7 +493,7 @@ impl LuaHost {
             ),
             None => {
                 if self.kind == PluginKind::Instrument {
-                    for channel in buffer.as_slice() {
+                    for channel in main.iter_mut() {
                         channel.fill(0.0);
                     }
                     self.params.set_meter_peak(0.0);
@@ -354,7 +506,7 @@ impl LuaHost {
             && (self.kind != PluginKind::Instrument || process_voice_fn.is_none())
         {
             if self.kind == PluginKind::Instrument {
-                for channel in buffer.as_slice() {
+                for channel in main.iter_mut() {
                     channel.fill(0.0);
                 }
                 self.params.set_meter_peak(0.0);
@@ -362,39 +514,41 @@ impl LuaHost {
             return;
         }
 
-        let num_samples = buffer.samples();
+        let num_samples = main.first().map(|channel| channel.len()).unwrap_or(0);
         self.params.set_block_size(num_samples);
 
-        let main_channels = buffer.channels();
-        let aux_channels = aux.inputs.first().map(|buffer| buffer.channels()).unwrap_or(0);
-        let mut input_peak = 0.0f32;
-        let mut sidechain_peak = 0.0f32;
-        let mut input_channel_peaks = vec![0.0f32; main_channels.max(1)];
-        let mut sidechain_channel_peaks = vec![0.0f32; aux_channels.max(1)];
-        let capture = num_samples.min(512);
-        let mut sidechain_samples = Vec::with_capacity(capture);
-        for sample in 0..num_samples {
-        for (channel, peak) in input_channel_peaks.iter_mut().enumerate().take(main_channels) {
-            let value = buffer.as_slice()[channel][sample].abs();
-            input_peak = input_peak.max(value);
-            *peak = (*peak).max(value);
-        }
+        let main_channels = main.len();
+        if self.params.editor_open() {
+            let aux_channels = aux.as_ref().map(|channels| channels.len()).unwrap_or(0);
+            let mut input_peak = 0.0f32;
+            let mut sidechain_peak = 0.0f32;
+            let mut input_channel_peaks = [0.0f32; 2];
+            let mut sidechain_channel_peaks = [0.0f32; 2];
+            for sample in 0..num_samples {
+                for channel in 0..main_channels {
+                    let value = main[channel][sample].abs();
+                    input_peak = input_peak.max(value);
+                    if channel < input_channel_peaks.len() {
+                        input_channel_peaks[channel] = input_channel_peaks[channel].max(value);
+                    }
+                }
 
-            if aux_channels > 0 {
-                let value = aux.inputs[0].as_slice()[0][sample];
-                sidechain_peak = sidechain_peak.max(value.abs());
-                sidechain_channel_peaks[0] = sidechain_channel_peaks[0].max(value.abs());
-                if sample < capture {
-                    sidechain_samples.push(value);
+                if let Some(aux) = aux.as_ref() {
+                    for channel in 0..aux_channels.min(sidechain_channel_peaks.len()) {
+                        let value = aux[channel][sample].abs();
+                        sidechain_peak = sidechain_peak.max(value);
+                        sidechain_channel_peaks[channel] =
+                            sidechain_channel_peaks[channel].max(value);
+                    }
                 }
             }
+            self.params.set_input_peak(input_peak);
+            self.params.set_sidechain_peak(sidechain_peak);
+            self.params.set_input_channel_peaks(&input_channel_peaks);
+            self.params
+                .set_sidechain_channel_peaks(&sidechain_channel_peaks);
+            self.params.push_level_trace(input_peak);
         }
-        self.params.set_input_peak(input_peak);
-        self.params.set_sidechain_peak(sidechain_peak);
-        self.params.set_input_channel_peaks(&input_channel_peaks);
-        self.params.set_sidechain_channel_peaks(&sidechain_channel_peaks);
-        self.params.set_sidechain_waveform(&sidechain_samples);
-        self.params.push_level_trace(input_peak);
 
         let _ = host_table.set("sample_rate", sample_rate);
         let _ = host_table.set("num_samples", num_samples as u64);
@@ -404,7 +558,7 @@ impl LuaHost {
         let _ = host_table.set("voice_mode", self.params.effective_voice_mode().as_str());
         let _ = host_table.set("max_voices", self.params.effective_max_voices());
 
-        let mut access = unsafe { BlockAccess::new(buffer, aux) };
+        let mut access = unsafe { BlockAccess::from_slices(main, aux) };
         if self.kind == PluginKind::Instrument {
             access.clear();
         }
@@ -471,26 +625,15 @@ impl LuaHost {
         let peak = access.peak();
         self.audio_bridge.clear();
 
-        let capture = num_samples.min(512);
-        let output_samples: Vec<f32> = (0..capture)
-            .map(|sample| {
-                buffer
-                    .as_slice()
-                    .first()
-                    .map(|channel| channel[sample])
-                    .unwrap_or(0.0)
-            })
-            .collect();
-        self.params.set_waveform(&output_samples);
-
-        let output_channels = buffer.channels().max(1);
-        let mut output_channel_peaks = vec![0.0f32; output_channels];
-        for (channel, peak) in output_channel_peaks.iter_mut().enumerate().take(output_channels) {
-            for sample in 0..num_samples {
-                *peak = (*peak).max(buffer.as_slice()[channel][sample].abs());
+        if self.params.editor_open() {
+            let mut output_channel_peaks = [0.0f32; 2];
+            for (channel, output_peak) in
+                output_channel_peaks.iter_mut().enumerate().take(main.len())
+            {
+                *output_peak = access.channel_peak(channel);
             }
+            self.params.set_output_channel_peaks(&output_channel_peaks);
         }
-        self.params.set_output_channel_peaks(&output_channel_peaks);
 
         match error {
             Some(error) => self.last_error = Some(error),
@@ -701,6 +844,15 @@ fn install_params_api(
                 )));
             };
             values.set_macro_scale(zero_based, parse_macro_scale(&spec)?);
+            Ok(())
+        })?,
+    )?;
+
+    let values = params.clone();
+    table.set(
+        "set_oversampling",
+        lua.create_function(move |_, factor: usize| {
+            values.set_oversampling_factor(factor);
             Ok(())
         })?,
     )?;
@@ -1400,9 +1552,11 @@ fn install_ui_api(
                     to: "table".to_string(),
                     message: Some("plot requires a value table".to_string()),
                 })?;
-            let color = args
-                .get(1)
-                .and_then(|value| value.as_string().map(|value| value.to_str().map(|s| s.to_string()).unwrap_or_default()));
+            let color = args.get(1).and_then(|value| {
+                value
+                    .as_string()
+                    .map(|value| value.to_str().map(|s| s.to_string()).unwrap_or_default())
+            });
             let mut points = Vec::new();
             for value in values.sequence_values::<f64>() {
                 points.push(value? as f32);
@@ -1410,7 +1564,8 @@ fn install_ui_api(
             ui.lock().plot(points, color);
             Ok(())
         })?,
-    )?;    let ui = builder.clone();
+    )?;
+    let ui = builder.clone();
     table.set(
         "level_graph",
         lua.create_function(move |_, ()| {
@@ -1426,13 +1581,16 @@ fn install_ui_api(
             ui.lock().compression_curve(threshold, ratio, knee);
             Ok(())
         })?,
-    )?;    let ui = builder.clone();
+    )?;
+    let ui = builder.clone();
     table.set(
         "curve",
-        lua.create_function(move |_, (drive, bias, shape, output): (f32, f32, f32, f32)| {
-            ui.lock().curve(drive, bias, shape, output);
-            Ok(())
-        })?,
+        lua.create_function(
+            move |_, (drive, bias, shape, output): (f32, f32, f32, f32)| {
+                ui.lock().curve(drive, bias, shape, output);
+                Ok(())
+            },
+        )?,
     )?;
     let ui = builder.clone();
     table.set(

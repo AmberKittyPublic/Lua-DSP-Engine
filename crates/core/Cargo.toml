@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+rubato = "0.15"
 nice-plug.workspace = true
 nice-plug-egui.workspace = true
 egui.workspace = true

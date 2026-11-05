@@ -13,6 +13,7 @@ pub struct LuaAudioFx {
 impl Default for LuaAudioFx {
     fn default() -> Self {
         let params = Arc::new(PluginParams::default());
+        params.set_oversampling_factor(1);
         let editor = EditorHost::new(params.clone(), PluginKind::AudioFx);
 
         Self {
@@ -86,11 +87,7 @@ impl Plugin for LuaAudioFx {
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         let measure = self.params.debug_latency_enabled();
-        let start = if measure {
-            Some(Instant::now())
-        } else {
-            None
-        };
+        let start = if measure { Some(Instant::now()) } else { None };
         if let Some(host) = self.host.as_mut() {
             let transport = context.transport();
             let sample_rate = transport.sample_rate;

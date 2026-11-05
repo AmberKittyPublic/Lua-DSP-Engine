@@ -38,10 +38,13 @@ The script writes platform folders and ZIP files under `dist/`:
 - `dist/windows`
 - `dist/macos`
 
-Linux and Windows are built from this repository on Linux. macOS requires the
-`x86_64-apple-darwin` and `aarch64-apple-darwin` Rust targets plus a macOS
-linker such as osxcross; when those are unavailable, the script skips macOS and
-prints setup instructions. GitHub Actions builds all three platforms natively.
+The default `all` mode builds targets with an installed Rust target and available
+linker, and skips unavailable cross-targets. macOS packaging creates CLAP and VST3
+bundles containing a universal binary. It requires the `x86_64-apple-darwin` and
+`aarch64-apple-darwin` targets plus `lipo`; when these are unavailable in `all`
+mode, macOS is skipped. An explicit `--platform macos` fails with the missing setup
+or build error.
+GitHub Actions builds all three platforms.
 
 The workspace contains `lua-plugin-core`, `lua-plugin-instrument`,
 `lua-plugin-audio-fx`, and `lua-plugin-midi-fx`. Core tests cover voice allocation,
@@ -83,8 +86,7 @@ plugin instance as needed.
 
 ## Other Targets
 
-For a non-Windows target, use Cargo's corresponding target triple and install the
-target with `rustup target add <target>`. The Windows GNU linker configuration is
-target-specific, but the absolute MinGW library path applies only to that Linux
-cross-build setup. This workspace does not currently define a packaging command
-for macOS or other targets.
+For another target, install its Rust target with `rustup target add <target>` and
+provide the corresponding linker/toolchain. The Windows GNU linker configuration
+is target-specific, but the absolute MinGW library path applies only to that Linux
+cross-build setup.

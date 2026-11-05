@@ -41,7 +41,9 @@ pub enum UiCommand {
         color: Option<String>,
     },
     Waveform,
-    VerticalMeter { value: f32 },
+    VerticalMeter {
+        value: f32,
+    },
     LevelGraph,
     Graph {
         children: Vec<UiCommand>,
@@ -50,7 +52,7 @@ pub enum UiCommand {
         values: Vec<f32>,
         color: Option<String>,
     },
-        CompressionCurve {
+    CompressionCurve {
         threshold: f32,
         ratio: f32,
         knee: f32,
@@ -65,7 +67,8 @@ pub enum UiCommand {
         bias: f32,
         shape: f32,
         output: f32,
-    },    Row(Vec<UiCommand>),
+    },
+    Row(Vec<UiCommand>),
     Column(Vec<UiCommand>),
     Group {
         title: Option<String>,
@@ -240,11 +243,12 @@ impl UiBuilder {
 
     pub fn plot(&mut self, values: Vec<f32>, color: Option<String>) {
         self.push(UiCommand::Plot { values, color });
-    }    pub fn level_graph(&mut self) {
+    }
+    pub fn level_graph(&mut self) {
         self.push(UiCommand::LevelGraph);
     }
 
-        pub fn compression_curve(&mut self, threshold: f32, ratio: f32, knee: f32) {
+    pub fn compression_curve(&mut self, threshold: f32, ratio: f32, knee: f32) {
         self.push(UiCommand::CompressionCurve {
             threshold,
             ratio,
@@ -258,7 +262,8 @@ impl UiBuilder {
             ratio,
             knee,
         });
-    }    pub fn curve(&mut self, drive: f32, bias: f32, shape: f32, output: f32) {
+    }
+    pub fn curve(&mut self, drive: f32, bias: f32, shape: f32, output: f32) {
         self.push(UiCommand::Curve {
             drive,
             bias,

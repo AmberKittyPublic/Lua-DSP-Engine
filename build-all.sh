@@ -80,6 +80,33 @@ build_target() {
     cargo build --workspace --release --target "$target"
 }
 
+target_installed() {
+    rustup target list --installed | grep -qx "$1"
+}
+
+can_build_linux() {
+    target_installed "x86_64-unknown-linux-gnu" || return 1
+    if [[ "$(uname -s)" == "Linux" && "$(uname -m)" == "x86_64" ]]; then
+        return 0
+    fi
+    command -v x86_64-linux-gnu-gcc >/dev/null 2>&1
+}
+
+can_build_windows() {
+    target_installed "x86_64-pc-windows-gnu" || return 1
+    if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
+        command -v gcc >/dev/null 2>&1
+    else
+        command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1
+    fi
+}
+
+can_build_macos() {
+    target_installed "x86_64-apple-darwin" \
+        && target_installed "aarch64-apple-darwin" \
+        && command -v lipo >/dev/null 2>&1
+}
+
 package_linux() {
     local target="x86_64-unknown-linux-gnu"
     local out="$DIST/linux"
@@ -170,47 +197,64 @@ package_macos() {
         local universal="$out/raw/${out_name}.dylib"
         lipo -create "$x86" "$arm" -output "$universal"
 
-        cp "$universal" "$out/clap/${out_name}.clap"
-        write_macos_bundle_metadata "$out/clap/${out_name}.clap" "$out_name" "$identifier" "$display_name"
+        local clap_bundle="$out/clap/${out_name}.clap"
+        write_macos_bundle_metadata "$clap_bundle" "$out_name" "$identifier" "$display_name"
+        cp "$universal" "$clap_bundle/Contents/MacOS/${out_name}"
 
         local vst3_bundle="$out/vst3/${out_name}.vst3"
         write_macos_bundle_metadata "$vst3_bundle" "$out_name" "$identifier" "$display_name"
-        cp "$universal" "$vst3_bundle/Contents/MacOS/${out_name}.vst3"
+        cp "$universal" "$vst3_bundle/Contents/MacOS/${out_name}"
     done
     make_zip "$DIST/lua-plugin-host-macos-universal.zip" "$out"
     echo "==> Packaged macOS artifacts in $out"
 }
 
 if [[ "$PLATFORM" == "all" || "$PLATFORM" == "linux" ]]; then
-    echo "==> Building Linux"
-    build_target "x86_64-unknown-linux-gnu"
-    package_linux
+    if [[ "$PLATFORM" == "all" ]] && ! can_build_linux; then
+        echo "==> Skipping Linux: target or cross-linker is unavailable"
+    else
+        echo "==> Building Linux"
+        build_target "x86_64-unknown-linux-gnu"
+        package_linux
+    fi
 fi
 
 if [[ "$PLATFORM" == "all" || "$PLATFORM" == "windows" ]]; then
-    echo "==> Building Windows"
-    build_target "x86_64-pc-windows-gnu"
-    package_windows
+    if [[ "$PLATFORM" == "all" ]] && ! can_build_windows; then
+        echo "==> Skipping Windows: target or MinGW linker is unavailable"
+    else
+        echo "==> Building Windows"
+        build_target "x86_64-pc-windows-gnu"
+        package_windows
+    fi
 fi
 
 if [[ "$PLATFORM" == "all" || "$PLATFORM" == "macos" ]]; then
-    echo "==> Building macOS (universal)"
-    if rustup target list --installed | grep -qx 'x86_64-apple-darwin' \
-        && rustup target list --installed | grep -qx 'aarch64-apple-darwin' \
-        && command -v lipo >/dev/null 2>&1; then
-    if build_target "x86_64-apple-darwin" && build_target "aarch64-apple-darwin"; then
-        package_macos
+    if [[ "$PLATFORM" == "all" ]] && ! can_build_macos; then
+        echo "==> Skipping macOS: both Rust targets and lipo are required"
     else
-        echo "==> macOS toolchain is installed but the build failed; skipping macOS packaging" >&2
-    fi
-else
-    cat >&2 <<'EOF'
+        echo "==> Building macOS (universal)"
+        if can_build_macos; then
+            if build_target "x86_64-apple-darwin" && build_target "aarch64-apple-darwin"; then
+                package_macos
+            else
+                echo "==> macOS toolchain is installed but the build failed; skipping macOS packaging" >&2
+                if [[ "$PLATFORM" == "macos" ]]; then
+                    exit 1
+                fi
+            fi
+        else
+            cat >&2 <<'EOF'
 ==> Skipping macOS: install the macOS Rust targets and a macOS linker, then rerun.
     Example with osxcross:
       rustup target add x86_64-apple-darwin aarch64-apple-darwin
       # configure CC_x86_64_apple_darwin / CC_aarch64_apple_darwin and the
       # macOS SDK, then rerun ./build-all.sh
 EOF
+            if [[ "$PLATFORM" == "macos" ]]; then
+                exit 1
+            fi
+        fi
     fi
 fi
 

@@ -3,50 +3,56 @@ use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 use nice_plug::prelude::*;
 
 const MAX_MIDI_EVENTS: usize = 1024;
+const MAX_AUDIO_CHANNELS: usize = 8;
 
-/// Scratch space shared between the audio thread and the Lua callbacks.
-///
-/// The pointers stored here are only valid while [`AudioBridge::publish`] and
-/// [`AudioBridge::clear`] bracket the call into Lua. Lua runs synchronously on
-/// the audio thread, so nothing is ever read from another thread.
 pub struct BlockAccess {
-    buffer: *mut Buffer<'static>,
-    aux: *mut AuxiliaryBuffers<'static>,
-    num_samples: usize,
+    main_ptrs: [*mut f32; MAX_AUDIO_CHANNELS],
     main_channels: usize,
+    num_samples: usize,
+    aux_ptrs: [*mut f32; MAX_AUDIO_CHANNELS],
     aux_channels: usize,
     peak: f32,
+    channel_peaks: [f32; MAX_AUDIO_CHANNELS],
 }
 
 impl BlockAccess {
     /// # Safety
-    ///
-    /// The caller must guarantee that `buffer` and `aux` stay alive and are not
-    /// otherwise aliased for as long as this value (or any copy of its raw
-    /// pointers) is reachable.
-    #[allow(clippy::unnecessary_cast)]
-    pub unsafe fn new(buffer: &mut Buffer<'_>, aux: &mut AuxiliaryBuffers<'_>) -> Self {
-        let buffer = buffer as *mut Buffer<'_> as *mut Buffer<'static>;
-        let aux = aux as *mut AuxiliaryBuffers<'_> as *mut AuxiliaryBuffers<'static>;
-
-        let num_samples = unsafe { (*buffer).samples() };
-        let main_channels = unsafe { (*buffer).channels() };
-        let aux_channels = unsafe {
-            (*aux)
-                .inputs
-                .first()
-                .map(|buffer| buffer.channels())
-                .unwrap_or(0)
-        };
-
+    /// Callers must ensure the slices are valid.
+    pub unsafe fn from_slices(main: &mut [&mut [f32]], aux: Option<&mut [&mut [f32]]>) -> Self {
+        let main_channels = main.len().min(MAX_AUDIO_CHANNELS);
+        let num_samples = main.first().map(|slice| slice.len()).unwrap_or(0);
+        let mut main_ptrs = [std::ptr::null_mut(); MAX_AUDIO_CHANNELS];
+        for (ptr, slice) in main_ptrs.iter_mut().zip(main.iter_mut()) {
+            *ptr = slice.as_mut_ptr();
+        }
+        let mut aux_ptrs = [std::ptr::null_mut(); MAX_AUDIO_CHANNELS];
+        let aux_channels = aux.map_or(0, |aux| {
+            for (ptr, slice) in aux_ptrs.iter_mut().zip(aux.iter_mut()) {
+                *ptr = slice.as_mut_ptr();
+            }
+            aux.len().min(MAX_AUDIO_CHANNELS)
+        });
         Self {
-            buffer,
-            aux,
-            num_samples,
+            main_ptrs,
             main_channels,
+            num_samples,
+            aux_ptrs,
             aux_channels,
             peak: 0.0,
+            channel_peaks: [0.0; MAX_AUDIO_CHANNELS],
         }
+    }
+
+    /// # Safety
+    /// Callers must ensure buffers are valid.
+    pub unsafe fn new(buffer: &mut Buffer<'_>, aux: &mut AuxiliaryBuffers<'_>) -> Self {
+        let main_slices = buffer.as_slice();
+        let aux_slices = if aux.inputs.is_empty() {
+            None
+        } else {
+            Some(aux.inputs[0].as_slice())
+        };
+        unsafe { Self::from_slices(main_slices, aux_slices) }
     }
 
     pub fn num_samples(&self) -> usize {
@@ -65,66 +71,95 @@ impl BlockAccess {
         self.peak
     }
 
+    pub fn channel_peak(&self, channel: usize) -> f32 {
+        self.channel_peaks.get(channel).copied().unwrap_or(0.0)
+    }
+
     pub fn clear(&mut self) {
-        let buffer = unsafe { &mut *self.buffer };
-        for channel in buffer.as_slice() {
-            channel.fill(0.0);
+        for &ptr in self.main_ptrs.iter().take(self.main_channels) {
+            for sample in 0..self.num_samples {
+                unsafe {
+                    *ptr.add(sample) = 0.0;
+                }
+            }
         }
         self.peak = 0.0;
+        self.channel_peaks.fill(0.0);
     }
 
     pub fn get(&mut self, channel: usize, sample: usize) -> Option<f32> {
         if channel >= self.main_channels || sample >= self.num_samples {
             return None;
         }
-
-        let buffer = unsafe { &mut *self.buffer };
-        Some(buffer.as_slice()[channel][sample])
+        Some(unsafe { *self.main_ptrs[channel].add(sample) })
     }
 
     pub fn set(&mut self, channel: usize, sample: usize, value: f32) {
         if channel >= self.main_channels || sample >= self.num_samples {
             return;
         }
-
-        let buffer = unsafe { &mut *self.buffer };
-        buffer.as_slice()[channel][sample] = value;
-        self.peak = self.peak.max(value.abs());
+        unsafe {
+            *self.main_ptrs[channel].add(sample) = value;
+        }
+        let channel_peak = &mut self.channel_peaks[channel];
+        *channel_peak = channel_peak.max(value.abs());
+        self.peak = self.peak.max(*channel_peak);
     }
 
     pub fn add(&mut self, channel: usize, sample: usize, value: f32) {
         if channel >= self.main_channels || sample >= self.num_samples {
             return;
         }
-
-        let buffer = unsafe { &mut *self.buffer };
-        let output = &mut buffer.as_slice()[channel][sample];
-        *output += value;
-        self.peak = self.peak.max(output.abs());
+        let output = unsafe {
+            let slot = self.main_ptrs[channel].add(sample);
+            *slot += value;
+            *slot
+        };
+        let channel_peak = &mut self.channel_peaks[channel];
+        *channel_peak = channel_peak.max(output.abs());
+        self.peak = self.peak.max(*channel_peak);
     }
 
     pub fn gain(&mut self, channel: usize, gain: f32) {
         if channel >= self.main_channels {
             return;
         }
-
-        let buffer = unsafe { &mut *self.buffer };
-        let samples = &mut buffer.as_slice()[channel];
-        let mut peak = self.peak;
-        for sample in samples.iter_mut() {
-            *sample *= gain;
-            peak = peak.max(sample.abs());
+        let ptr = self.main_ptrs[channel];
+        let mut channel_peak = 0.0f32;
+        for sample in 0..self.num_samples {
+            unsafe {
+                *ptr.add(sample) *= gain;
+                channel_peak = channel_peak.max((*ptr.add(sample)).abs());
+            }
         }
-        self.peak = peak;
+        self.channel_peaks[channel] = channel_peak;
+        self.peak = self.channel_peaks.iter().copied().fold(0.0, f32::max);
     }
 
     pub fn sc_get(&mut self, channel: usize, sample: usize) -> Option<f32> {
         if channel >= self.aux_channels || sample >= self.num_samples {
             return None;
         }
+        Some(unsafe { *self.aux_ptrs[channel].add(sample) })
+    }
+}
 
-        let aux = unsafe { &mut *self.aux };
-        Some(aux.inputs[0].as_slice()[channel][sample])
+#[cfg(test)]
+mod tests {
+    use super::BlockAccess;
+
+    #[test]
+    fn clear_only_touches_present_channels() {
+        let mut left = [0.5f32, -0.25];
+        let mut right = [0.75f32, -0.5];
+        let mut channels: [&mut [f32]; 2] = [&mut left, &mut right];
+        let mut access = unsafe { BlockAccess::from_slices(&mut channels, None) };
+
+        access.clear();
+
+        assert_eq!(left, [0.0, 0.0]);
+        assert_eq!(right, [0.0, 0.0]);
+        assert_eq!(access.num_channels(), 2);
     }
 }
 

@@ -39,6 +39,9 @@ impl EditorHost {
     }
 
     pub fn create(&mut self) -> Option<LuaEditorType> {
+        if let Some(editor) = &self.editor {
+            editor.params.set_editor_open(true);
+        }
         let app = self.editor.take()?;
 
         create_egui_editor(
@@ -147,6 +150,18 @@ impl LuaEditor {
             if ui.button("Reload script").clicked() {
                 self.params.request_reload();
                 self.error = None;
+            }
+
+            if self.kind == PluginKind::Instrument {
+                let mut oversampling = self.params.oversampling_factor() as i32;
+                egui::ComboBox::from_label("Oversampling")
+                    .selected_text(format!("{oversampling}x"))
+                    .show_ui(ui, |ui| {
+                        for factor in [1, 2, 4, 8, 16] {
+                            ui.selectable_value(&mut oversampling, factor, format!("{factor}x"));
+                        }
+                    });
+                self.params.set_oversampling_factor(oversampling as usize);
             }
         });
 
@@ -328,9 +343,13 @@ impl NiceEguiApp for LuaEditor {
 
     fn editor_closed(&mut self) {
         self.gui_ctx = None;
+        self.params.set_editor_open(false);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut nice_plug_egui::Frame) {
+        if !self.params.editor_open() {
+            return;
+        }
         let Some(gui_ctx) = self.gui_ctx.clone() else {
             return;
         };
@@ -378,7 +397,10 @@ impl NiceEguiApp for LuaEditor {
                     .default_open(false)
                     .show(ui, |ui| {
                         let mut enabled = self.params.debug_latency_enabled();
-                        if ui.checkbox(&mut enabled, "Measure latency (adds overhead)").changed() {
+                        if ui
+                            .checkbox(&mut enabled, "Measure latency (adds overhead)")
+                            .changed()
+                        {
                             self.params.set_debug_latency_enabled(enabled);
                         }
                         let block_size = self.params.block_size();
@@ -396,9 +418,7 @@ impl NiceEguiApp for LuaEditor {
                                 self.params.last_processing_latency_ms()
                             ));
                         } else {
-                            ui.label(format!(
-                                "Estimated block latency: {estimated_ms:.2} ms"
-                            ));
+                            ui.label(format!("Estimated block latency: {estimated_ms:.2} ms"));
                         }
                         ui.label(format!("Output peak: {:.3}", self.params.meter_peak()));
                     });
@@ -545,7 +565,11 @@ fn render_commands(
                     }
                 }
             }
-            UiCommand::Meter { value, label, color } => {
+            UiCommand::Meter {
+                value,
+                label,
+                color,
+            } => {
                 ui.horizontal(|ui| {
                     if let Some(label) = label {
                         ui.label(label);
@@ -563,7 +587,12 @@ fn render_commands(
                 let size = egui::vec2(320.0, 120.0);
                 let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
                 let painter = ui.painter_at(rect);
-                painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.0, egui::Color32::GRAY), egui::StrokeKind::Inside);
+                painter.rect_stroke(
+                    rect,
+                    0.0,
+                    egui::Stroke::new(1.0, egui::Color32::GRAY),
+                    egui::StrokeKind::Inside,
+                );
                 for child in children {
                     if let UiCommand::Plot { values, color } = child {
                         if values.is_empty() {
@@ -584,7 +613,10 @@ fn render_commands(
                         painter.add(egui::Shape::line(points, egui::Stroke::new(1.5, color)));
                     }
                 }
-                painter.line_segment([rect.left_bottom(), rect.right_bottom()], egui::Stroke::new(1.0, egui::Color32::DARK_GRAY));
+                painter.line_segment(
+                    [rect.left_bottom(), rect.right_bottom()],
+                    egui::Stroke::new(1.0, egui::Color32::DARK_GRAY),
+                );
             }
             UiCommand::Plot { .. } => {}
             UiCommand::VerticalMeter { value } => {
@@ -592,19 +624,31 @@ fn render_commands(
                 let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
                 let painter = ui.painter_at(rect);
                 painter.rect_filled(rect, 0.0, egui::Color32::from_gray(30));
-                painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.0, egui::Color32::GRAY), egui::StrokeKind::Inside);
+                painter.rect_stroke(
+                    rect,
+                    0.0,
+                    egui::Stroke::new(1.0, egui::Color32::GRAY),
+                    egui::StrokeKind::Inside,
+                );
                 let value = value.clamp(0.0, 1.0);
                 let green_top = 0.6;
                 let orange_top = 0.8;
                 // segment heights
-                let segments = [(0.0f32, green_top, egui::Color32::GREEN), (green_top, orange_top, egui::Color32::from_rgb(255, 165, 0)), (orange_top, 1.0f32, egui::Color32::RED)];
+                let segments = [
+                    (0.0f32, green_top, egui::Color32::GREEN),
+                    (green_top, orange_top, egui::Color32::from_rgb(255, 165, 0)),
+                    (orange_top, 1.0f32, egui::Color32::RED),
+                ];
                 for (start, end, color) in segments {
                     let seg_start = start.min(value);
                     let seg_end = end.min(value);
                     if seg_end > seg_start {
                         let bottom = rect.bottom() - seg_start * rect.height();
                         let top = rect.bottom() - seg_end * rect.height();
-                        let seg_rect = egui::Rect::from_min_max(egui::pos2(rect.left(), top), egui::pos2(rect.right(), bottom));
+                        let seg_rect = egui::Rect::from_min_max(
+                            egui::pos2(rect.left(), top),
+                            egui::pos2(rect.right(), bottom),
+                        );
                         painter.rect_filled(seg_rect, 0.0, color);
                     }
                 }
@@ -615,26 +659,44 @@ fn render_commands(
                 let size = egui::vec2(320.0, 120.0);
                 let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
                 let painter = ui.painter_at(rect);
-                painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.0, egui::Color32::GRAY), egui::StrokeKind::Inside);
+                painter.rect_stroke(
+                    rect,
+                    0.0,
+                    egui::Stroke::new(1.0, egui::Color32::GRAY),
+                    egui::StrokeKind::Inside,
+                );
                 if !output.is_empty() {
                     let mut points = Vec::with_capacity(output.len());
                     for (index, value) in output.iter().enumerate() {
-                        let x = rect.left() + index as f32 / (output.len().saturating_sub(1).max(1) as f32) * rect.width();
+                        let x = rect.left()
+                            + index as f32 / (output.len().saturating_sub(1).max(1) as f32)
+                                * rect.width();
                         let y = rect.center().y - value.clamp(-1.0, 1.0) * 0.5 * rect.height();
                         points.push(egui::pos2(x, y));
                     }
-                    painter.add(egui::Shape::line(points, egui::Stroke::new(1.5, egui::Color32::GREEN)));
+                    painter.add(egui::Shape::line(
+                        points,
+                        egui::Stroke::new(1.5, egui::Color32::GREEN),
+                    ));
                 }
                 if !sidechain.is_empty() {
                     let mut points = Vec::with_capacity(sidechain.len());
                     for (index, value) in sidechain.iter().enumerate() {
-                        let x = rect.left() + index as f32 / (sidechain.len().saturating_sub(1).max(1) as f32) * rect.width();
+                        let x = rect.left()
+                            + index as f32 / (sidechain.len().saturating_sub(1).max(1) as f32)
+                                * rect.width();
                         let y = rect.center().y - value.clamp(-1.0, 1.0) * 0.5 * rect.height();
                         points.push(egui::pos2(x, y));
                     }
-                    painter.add(egui::Shape::line(points, egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 180, 0))));
+                    painter.add(egui::Shape::line(
+                        points,
+                        egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 180, 0)),
+                    ));
                 }
-                painter.line_segment([rect.left_center(), rect.right_center()], egui::Stroke::new(1.0, egui::Color32::DARK_GRAY));
+                painter.line_segment(
+                    [rect.left_center(), rect.right_center()],
+                    egui::Stroke::new(1.0, egui::Color32::DARK_GRAY),
+                );
             }
             UiCommand::LevelGraph => {
                 let levels = params.level_trace();
@@ -642,26 +704,44 @@ fn render_commands(
                 let size = egui::vec2(320.0, 120.0);
                 let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
                 let painter = ui.painter_at(rect);
-                painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.0, egui::Color32::GRAY), egui::StrokeKind::Inside);
+                painter.rect_stroke(
+                    rect,
+                    0.0,
+                    egui::Stroke::new(1.0, egui::Color32::GRAY),
+                    egui::StrokeKind::Inside,
+                );
                 if !levels.is_empty() {
                     let mut points = Vec::with_capacity(levels.len());
                     for (index, value) in levels.iter().enumerate() {
-                        let x = rect.left() + index as f32 / (levels.len().saturating_sub(1).max(1) as f32) * rect.width();
+                        let x = rect.left()
+                            + index as f32 / (levels.len().saturating_sub(1).max(1) as f32)
+                                * rect.width();
                         let y = rect.bottom() - value.clamp(0.0, 1.0) * rect.height();
                         points.push(egui::pos2(x, y));
                     }
-                    painter.add(egui::Shape::line(points, egui::Stroke::new(1.5, egui::Color32::GREEN)));
+                    painter.add(egui::Shape::line(
+                        points,
+                        egui::Stroke::new(1.5, egui::Color32::GREEN),
+                    ));
                 }
                 if !gains.is_empty() {
                     let mut points = Vec::with_capacity(gains.len());
                     for (index, value) in gains.iter().enumerate() {
-                        let x = rect.left() + index as f32 / (gains.len().saturating_sub(1).max(1) as f32) * rect.width();
+                        let x = rect.left()
+                            + index as f32 / (gains.len().saturating_sub(1).max(1) as f32)
+                                * rect.width();
                         let y = rect.bottom() - value.clamp(0.0, 1.0) * rect.height();
                         points.push(egui::pos2(x, y));
                     }
-                    painter.add(egui::Shape::line(points, egui::Stroke::new(1.5, egui::Color32::RED)));
+                    painter.add(egui::Shape::line(
+                        points,
+                        egui::Stroke::new(1.5, egui::Color32::RED),
+                    ));
                 }
-                painter.line_segment([rect.left_bottom(), rect.right_bottom()], egui::Stroke::new(1.0, egui::Color32::DARK_GRAY));
+                painter.line_segment(
+                    [rect.left_bottom(), rect.right_bottom()],
+                    egui::Stroke::new(1.0, egui::Color32::DARK_GRAY),
+                );
             }
             UiCommand::CompressionCurve {
                 threshold,
@@ -671,7 +751,12 @@ fn render_commands(
                 let size = egui::vec2(220.0, 120.0);
                 let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
                 let painter = ui.painter_at(rect);
-                painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.0, egui::Color32::GRAY), egui::StrokeKind::Inside);
+                painter.rect_stroke(
+                    rect,
+                    0.0,
+                    egui::Stroke::new(1.0, egui::Color32::GRAY),
+                    egui::StrokeKind::Inside,
+                );
                 let mut points = Vec::with_capacity(129);
                 for index in 0..=128 {
                     let input = index as f32 / 128.0;
@@ -690,13 +775,19 @@ fn render_commands(
                     let y = rect.bottom() - output * rect.height();
                     points.push(egui::pos2(x, y));
                 }
-                painter.add(egui::Shape::line(points, egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 180, 0))));
+                painter.add(egui::Shape::line(
+                    points,
+                    egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 180, 0)),
+                ));
                 // unity line
                 let unity = vec![
                     egui::pos2(rect.left(), rect.bottom()),
                     egui::pos2(rect.right(), rect.top()),
                 ];
-                painter.add(egui::Shape::line(unity, egui::Stroke::new(1.0, egui::Color32::DARK_GRAY)));
+                painter.add(egui::Shape::line(
+                    unity,
+                    egui::Stroke::new(1.0, egui::Color32::DARK_GRAY),
+                ));
             }
             UiCommand::CompressorGraph {
                 threshold,
@@ -708,24 +799,39 @@ fn render_commands(
                 let size = egui::vec2(320.0, 120.0);
                 let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
                 let painter = ui.painter_at(rect);
-                painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.0, egui::Color32::GRAY), egui::StrokeKind::Inside);
+                painter.rect_stroke(
+                    rect,
+                    0.0,
+                    egui::Stroke::new(1.0, egui::Color32::GRAY),
+                    egui::StrokeKind::Inside,
+                );
                 if !levels.is_empty() {
                     let mut points = Vec::with_capacity(levels.len());
                     for (index, value) in levels.iter().enumerate() {
-                        let x = rect.left() + index as f32 / (levels.len().saturating_sub(1).max(1) as f32) * rect.width();
+                        let x = rect.left()
+                            + index as f32 / (levels.len().saturating_sub(1).max(1) as f32)
+                                * rect.width();
                         let y = rect.bottom() - value.clamp(0.0, 1.0) * rect.height();
                         points.push(egui::pos2(x, y));
                     }
-                    painter.add(egui::Shape::line(points, egui::Stroke::new(1.5, egui::Color32::GREEN)));
+                    painter.add(egui::Shape::line(
+                        points,
+                        egui::Stroke::new(1.5, egui::Color32::GREEN),
+                    ));
                 }
                 if !gains.is_empty() {
                     let mut points = Vec::with_capacity(gains.len());
                     for (index, value) in gains.iter().enumerate() {
-                        let x = rect.left() + index as f32 / (gains.len().saturating_sub(1).max(1) as f32) * rect.width();
+                        let x = rect.left()
+                            + index as f32 / (gains.len().saturating_sub(1).max(1) as f32)
+                                * rect.width();
                         let y = rect.bottom() - value.clamp(0.0, 1.0) * rect.height();
                         points.push(egui::pos2(x, y));
                     }
-                    painter.add(egui::Shape::line(points, egui::Stroke::new(1.5, egui::Color32::RED)));
+                    painter.add(egui::Shape::line(
+                        points,
+                        egui::Stroke::new(1.5, egui::Color32::RED),
+                    ));
                 }
                 // overlay compression curve
                 let mut curve = Vec::with_capacity(129);
@@ -746,9 +852,16 @@ fn render_commands(
                     let y = rect.bottom() - output * rect.height();
                     curve.push(egui::pos2(x, y));
                 }
-                painter.add(egui::Shape::line(curve, egui::Stroke::new(2.0, egui::Color32::from_rgba_unmultiplied(255, 180, 0, 160))));
-                painter.line_segment([rect.left_bottom(), rect.right_bottom()], egui::Stroke::new(1.0, egui::Color32::DARK_GRAY));
-            }            UiCommand::Curve {
+                painter.add(egui::Shape::line(
+                    curve,
+                    egui::Stroke::new(2.0, egui::Color32::from_rgba_unmultiplied(255, 180, 0, 160)),
+                ));
+                painter.line_segment(
+                    [rect.left_bottom(), rect.right_bottom()],
+                    egui::Stroke::new(1.0, egui::Color32::DARK_GRAY),
+                );
+            }
+            UiCommand::Curve {
                 drive,
                 bias,
                 shape,
@@ -757,7 +870,12 @@ fn render_commands(
                 let size = egui::vec2(180.0, 180.0);
                 let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
                 let painter = ui.painter_at(rect);
-                painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.0, egui::Color32::GRAY), egui::StrokeKind::Inside);
+                painter.rect_stroke(
+                    rect,
+                    0.0,
+                    egui::Stroke::new(1.0, egui::Color32::GRAY),
+                    egui::StrokeKind::Inside,
+                );
                 let drive = 10.0f32.powf(drive / 20.0);
                 let output = 10.0f32.powf(output / 20.0);
                 let mut points = Vec::with_capacity(129);
@@ -783,7 +901,8 @@ fn render_commands(
                     [rect.center_top(), rect.center_bottom()],
                     egui::Stroke::new(1.0, egui::Color32::DARK_GRAY),
                 );
-            }            UiCommand::Row(children) => {
+            }
+            UiCommand::Row(children) => {
                 ui.horizontal(|ui| {
                     render_commands(ui, children, params, setter, clicked);
                 });
@@ -941,7 +1060,8 @@ fn parse_color(color: &str) -> Color32 {
                 )
             {
                 return Color32::from_rgb(r, g, b);
-            }            Color32::RED
+            }
+            Color32::RED
         }
     }
 }

@@ -431,10 +431,7 @@ mod tests {
         ));
 
         install_factory_scripts(&root).expect("initial installation should succeed");
-        let first = root
-            .join(EXTENSIONS_FOLDER)
-            .join("synth")
-            .join("kick.lua");
+        let first = root.join(EXTENSIONS_FOLDER).join("synth").join("kick.lua");
         assert!(first.exists());
         fs::write(&first, "-- user edit").expect("test edit should succeed");
 

@@ -84,11 +84,7 @@ impl Plugin for LuaInstrument {
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         let measure = self.params.debug_latency_enabled();
-        let start = if measure {
-            Some(Instant::now())
-        } else {
-            None
-        };
+        let start = if measure { Some(Instant::now()) } else { None };
         if let Some(host) = self.host.as_mut() {
             host.dispatch_midi(context);
 

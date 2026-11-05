@@ -156,6 +156,7 @@ Transport fields are updated for processing callbacks. Do not assume a meaningfu
 - `params.count()` returns `64`.
 - `params.get(index)` reads a macro value. It returns the normalized `0..1` value unless a script scale has been declared, in which case it returns the scaled float or integer value.
 - `params.set_range(index, scale)` declares how a normalized host macro maps to a script value.
+- `params.set_oversampling(factor)` sets the processing oversampling factor, clamped to `1..16` (default `2`).
 - `params.default(index)` reads the current script-declared reset value in the script's scale.
 - `params.set_default(index, value)` declares one script reset value.
 - `params.set_defaults({ [index] = value, ... })` declares several at once.

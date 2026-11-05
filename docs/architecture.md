@@ -96,6 +96,12 @@ memory limit and instruction budgets for script loading, processing, MIDI, and U
 callbacks. These limits are safety bounds, not real-time isolation: expensive Lua
 loops, allocations, or blocking work can still affect audio performance.
 
+At 1x, the steady-state audio path avoids host-side locks and heap allocation.
+Optional editor telemetry is collected only while the editor is open and uses
+fixed-size atomic buffers. Oversampling above 1x is opt-in and currently adds
+resampling work and per-block allocations, so leave it at 1x for real-time-sensitive
+use.
+
 Prefer Rust-backed helpers such as `synth.osc("saw"):render(...)`,
 `osc:render_env()`, and `osc:render_filtered()` for per-sample synthesis, envelope,
 and filter work. LFO and envelope objects can advance in Rust for each sample

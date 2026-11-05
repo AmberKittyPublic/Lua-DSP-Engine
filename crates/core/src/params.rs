@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use nice_plug::prelude::*;
 use parking_lot::Mutex;
@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 
 pub const MACRO_COUNT: usize = 64;
 pub const MAX_VOICES: usize = 32;
+const TRACE_LEN: usize = 128;
+const METER_CHANNELS: usize = 2;
 pub const DEFAULT_SCRIPT: &str = include_str!("../scripts/default.lua");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,18 +169,24 @@ pub struct PluginParams {
     pub sample_rate: AtomicU32,
     pub meter_peak: AtomicU32,
     pub block_size: AtomicU32,
+    pub oversampling_factor: AtomicU32,
+    pub editor_open: AtomicBool,
     pub debug_latency_enabled: AtomicBool,
     pub last_processing_latency_ms: AtomicU32,
     pub input_peak: AtomicU32,
     pub sidechain_peak: AtomicU32,
-    pub waveform: Mutex<Vec<f32>>,
-    pub sidechain_waveform: Mutex<Vec<f32>>,
-    pub level_trace: Mutex<Vec<f32>>,
-    pub gain_trace: Mutex<Vec<f32>>,
-    pub input_channel_peaks: Mutex<Vec<f32>>,
-    pub output_channel_peaks: Mutex<Vec<f32>>,
-    pub sidechain_channel_peaks: Mutex<Vec<f32>>,
-}impl Default for PluginParams {
+    waveform: Mutex<Vec<f32>>,
+    sidechain_waveform: Mutex<Vec<f32>>,
+    level_trace: [AtomicU32; TRACE_LEN],
+    level_trace_write: AtomicUsize,
+    gain_trace: [AtomicU32; TRACE_LEN],
+    gain_trace_write: AtomicUsize,
+    input_channel_peaks: [AtomicU32; METER_CHANNELS],
+    output_channel_peaks: [AtomicU32; METER_CHANNELS],
+    sidechain_channel_peaks: [AtomicU32; METER_CHANNELS],
+}
+
+impl Default for PluginParams {
     fn default() -> Self {
         Self {
             macros: std::array::from_fn(MacroSlot::new),
@@ -202,17 +210,21 @@ pub struct PluginParams {
             sample_rate: AtomicU32::new(44_100.0f32.to_bits()),
             meter_peak: AtomicU32::new(0.0f32.to_bits()),
             block_size: AtomicU32::new(0),
+            oversampling_factor: AtomicU32::new(1),
+            editor_open: AtomicBool::new(false),
             debug_latency_enabled: AtomicBool::new(false),
             last_processing_latency_ms: AtomicU32::new(0.0f32.to_bits()),
             input_peak: AtomicU32::new(0.0f32.to_bits()),
             sidechain_peak: AtomicU32::new(0.0f32.to_bits()),
             waveform: Mutex::new(Vec::new()),
             sidechain_waveform: Mutex::new(Vec::new()),
-            level_trace: Mutex::new(Vec::new()),
-            gain_trace: Mutex::new(Vec::new()),
-            input_channel_peaks: Mutex::new(Vec::new()),
-            output_channel_peaks: Mutex::new(Vec::new()),
-            sidechain_channel_peaks: Mutex::new(Vec::new()),
+            level_trace: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
+            level_trace_write: AtomicUsize::new(0),
+            gain_trace: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
+            gain_trace_write: AtomicUsize::new(0),
+            input_channel_peaks: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
+            output_channel_peaks: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
+            sidechain_channel_peaks: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
         }
     }
 }
@@ -389,6 +401,24 @@ impl PluginParams {
         self.block_size.load(Ordering::Relaxed) as usize
     }
 
+    pub fn editor_open(&self) -> bool {
+        self.editor_open.load(Ordering::Relaxed)
+    }
+
+    pub fn set_editor_open(&self, open: bool) {
+        self.editor_open.store(open, Ordering::Relaxed);
+    }
+
+    pub fn oversampling_factor(&self) -> usize {
+        self.oversampling_factor
+            .load(Ordering::Relaxed)
+            .clamp(1, 16) as usize
+    }
+
+    pub fn set_oversampling_factor(&self, factor: usize) {
+        self.oversampling_factor
+            .store(factor.clamp(1, 16) as u32, Ordering::Relaxed);
+    }
     pub fn debug_latency_enabled(&self) -> bool {
         self.debug_latency_enabled.load(Ordering::Relaxed)
     }
@@ -402,8 +432,11 @@ impl PluginParams {
     }
 
     pub fn set_last_processing_latency_ms(&self, value: f32) {
-        self.last_processing_latency_ms.store(value.to_bits(), Ordering::Relaxed);
-    }    pub fn set_meter_peak(&self, peak: f32) {
+        self.last_processing_latency_ms
+            .store(value.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn set_meter_peak(&self, peak: f32) {
         self.meter_peak.store(peak.to_bits(), Ordering::Relaxed);
     }
 
@@ -444,52 +477,91 @@ impl PluginParams {
     }
 
     pub fn push_level_trace(&self, value: f32) {
-        let mut trace = self.level_trace.lock();
-        trace.push(value);
-        if trace.len() > 128 {
-            trace.remove(0);
-        }
+        let sequence = self.level_trace_write.fetch_add(1, Ordering::Relaxed);
+        self.level_trace[sequence % TRACE_LEN].store(value.to_bits(), Ordering::Relaxed);
     }
 
     pub fn level_trace(&self) -> Vec<f32> {
-        self.level_trace.lock().clone()
+        read_trace(&self.level_trace, &self.level_trace_write)
     }
 
     pub fn push_gain_trace(&self, value: f32) {
-        let mut trace = self.gain_trace.lock();
-        trace.push(value);
-        if trace.len() > 128 {
-            trace.remove(0);
-        }
+        let sequence = self.gain_trace_write.fetch_add(1, Ordering::Relaxed);
+        self.gain_trace[sequence % TRACE_LEN].store(value.to_bits(), Ordering::Relaxed);
     }
 
     pub fn gain_trace(&self) -> Vec<f32> {
-        self.gain_trace.lock().clone()
+        read_trace(&self.gain_trace, &self.gain_trace_write)
     }
 
     pub fn set_input_channel_peaks(&self, peaks: &[f32]) {
-        *self.input_channel_peaks.lock() = peaks.to_vec();
+        for (slot, peak) in self.input_channel_peaks.iter().zip(peaks) {
+            slot.store(peak.to_bits(), Ordering::Relaxed);
+        }
     }
 
     pub fn input_channel_peaks(&self) -> Vec<f32> {
-        self.input_channel_peaks.lock().clone()
+        self.input_channel_peaks
+            .iter()
+            .map(|peak| f32::from_bits(peak.load(Ordering::Relaxed)))
+            .collect()
+    }
+
+    pub fn input_channel_peak(&self, channel: usize) -> f32 {
+        self.input_channel_peaks
+            .get(channel)
+            .map(|peak| f32::from_bits(peak.load(Ordering::Relaxed)))
+            .unwrap_or(0.0)
     }
 
     pub fn set_output_channel_peaks(&self, peaks: &[f32]) {
-        *self.output_channel_peaks.lock() = peaks.to_vec();
+        for (slot, peak) in self.output_channel_peaks.iter().zip(peaks) {
+            slot.store(peak.to_bits(), Ordering::Relaxed);
+        }
     }
 
     pub fn output_channel_peaks(&self) -> Vec<f32> {
-        self.output_channel_peaks.lock().clone()
+        self.output_channel_peaks
+            .iter()
+            .map(|peak| f32::from_bits(peak.load(Ordering::Relaxed)))
+            .collect()
+    }
+
+    pub fn output_channel_peak(&self, channel: usize) -> f32 {
+        self.output_channel_peaks
+            .get(channel)
+            .map(|peak| f32::from_bits(peak.load(Ordering::Relaxed)))
+            .unwrap_or(0.0)
     }
 
     pub fn set_sidechain_channel_peaks(&self, peaks: &[f32]) {
-        *self.sidechain_channel_peaks.lock() = peaks.to_vec();
+        for (slot, peak) in self.sidechain_channel_peaks.iter().zip(peaks) {
+            slot.store(peak.to_bits(), Ordering::Relaxed);
+        }
     }
 
     pub fn sidechain_channel_peaks(&self) -> Vec<f32> {
-        self.sidechain_channel_peaks.lock().clone()
+        self.sidechain_channel_peaks
+            .iter()
+            .map(|peak| f32::from_bits(peak.load(Ordering::Relaxed)))
+            .collect()
     }
+
+    pub fn sidechain_channel_peak(&self, channel: usize) -> f32 {
+        self.sidechain_channel_peaks
+            .get(channel)
+            .map(|peak| f32::from_bits(peak.load(Ordering::Relaxed)))
+            .unwrap_or(0.0)
+    }
+}
+
+fn read_trace(trace: &[AtomicU32; TRACE_LEN], write: &AtomicUsize) -> Vec<f32> {
+    let end = write.load(Ordering::Relaxed);
+    let len = end.min(TRACE_LEN);
+    let start = end.saturating_sub(len);
+    (start..end)
+        .map(|sequence| f32::from_bits(trace[sequence % TRACE_LEN].load(Ordering::Relaxed)))
+        .collect()
 }
 
 #[cfg(test)]
@@ -505,5 +577,18 @@ mod tests {
         let float = MacroScale::new(MacroScaleType::Float, -12.0, 12.0).unwrap();
         assert_eq!(float.value(0.5), 0.0);
         assert_eq!(float.normalize(0.0), 0.5);
+    }
+
+    #[test]
+    fn graph_traces_keep_only_the_latest_samples_in_order() {
+        let params = PluginParams::default();
+        for value in 0..(TRACE_LEN + 3) {
+            params.push_level_trace(value as f32);
+        }
+
+        let trace = params.level_trace();
+        assert_eq!(trace.len(), TRACE_LEN);
+        assert_eq!(trace[0], 3.0);
+        assert_eq!(trace[TRACE_LEN - 1], (TRACE_LEN + 2) as f32);
     }
 }
