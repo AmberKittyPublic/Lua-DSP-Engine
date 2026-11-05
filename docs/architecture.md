@@ -15,11 +15,12 @@ port layouts so hosts can categorize and route them correctly.
 
 ## Script Lifecycle
 
-Scripts are stored in the plugin's persisted `ScriptState`. **Apply & reload**
-updates the source and increments a version counter. The audio and UI hosts notice
-that version and create fresh Luau states from the same source. The UI host also
-compares the persisted script name and source, so a state restored without a version
-counter change still refreshes the editor script.
+Scripts are stored in the plugin's persisted `ScriptState`. **Load script...**
+reads a file from the OS file picker, updates the source/path, and increments a
+version counter. The audio and UI hosts notice that version and create fresh Luau
+states from the same source. The UI host also compares the persisted script name
+and source, so a state restored without a version counter change still refreshes
+the script.
 
 There are two independent Luau states per plugin instance:
 
@@ -81,9 +82,12 @@ preserves current macro values; the editor's **Reset macros to script defaults**
 button explicitly applies the declarations. These are script reset values, not
 changes to the DAW's native parameter default metadata.
 
-The custom editor exposes voice controls for the instrument, all macros, the Lua
-script editor, and script-defined UI commands. The script text and its name are
-persisted with the plugin state.
+The custom editor exposes voice controls for the instrument, all macros, script
+loading controls, and script-defined UI commands. The script source, name, and
+selected path are persisted with the plugin state. On first open, the editor creates
+`Documents/Lua Plugin Host/` with `extensions/synth`, `extensions/audio-fx`,
+`extensions/midi-fx`, and `presets`, then copies in bundled factory scripts that are
+not already present.
 
 ## Runtime Constraints
 

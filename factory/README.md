@@ -1,9 +1,11 @@
 # Factory Scripts
 
-These scripts are starting points for the three plugin types. Open the plugin's
-script editor, paste a script, and choose **Apply & reload**. To apply the values
-declared in a script's `params.set_defaults()` call, choose **Reset macros to
-script defaults**; applying a script otherwise preserves existing macro values.
+These scripts are starting points for the three plugin types. The plugin copies
+them into `Documents/Lua Plugin Host/scripts/` on first open; choose
+**Load script...** in the plugin's **Script** panel to open that folder and load
+one. To apply the values declared in a script's `params.set_defaults()` call,
+choose **Reset macros to script defaults**; loading a script otherwise preserves
+existing macro values.
 
 - `midi-fx/16th-arpeggiator.lua`: transport-synced sixteenth-note arp. Hold MIDI
   notes and start playback. Macros control gate, octave span, and direction.
@@ -31,6 +33,8 @@ script defaults**; applying a script otherwise preserves existing macro values.
   sidechain blend control.
 - `audio-fx/stereo-reverb.lua`: stereo comb/allpass reverb with room, damping, wet,
   and width controls.
+- `audio-fx/saturator.lua`: soft-clipping saturator with drive, tone, output, and
+  dry/wet mix controls.
 
 All scripts use the shared 64 macro parameters; each script documents its macro
 assignments in its header.

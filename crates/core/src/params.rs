@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use nice_plug::prelude::*;
 use parking_lot::Mutex;
@@ -83,6 +83,22 @@ impl PluginKind {
             Self::MidiFx => "midi_fx",
         }
     }
+
+    pub fn folder_name(self) -> &'static str {
+        match self {
+            Self::Instrument => "instrument",
+            Self::AudioFx => "audio-fx",
+            Self::MidiFx => "midi-fx",
+        }
+    }
+
+    pub fn extension_folder_name(self) -> &'static str {
+        match self {
+            Self::Instrument => "synth",
+            Self::AudioFx => "audio-fx",
+            Self::MidiFx => "midi-fx",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +106,12 @@ pub struct ScriptState {
     pub name: String,
     pub source: String,
     pub path: Option<String>,
+    #[serde(default)]
+    pub modules: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub extension_id: Option<String>,
+    #[serde(default)]
+    pub extension_version: Option<String>,
 }
 
 impl Default for ScriptState {
@@ -98,6 +120,9 @@ impl Default for ScriptState {
             name: "default.lua".to_string(),
             source: DEFAULT_SCRIPT.to_string(),
             path: None,
+            modules: std::collections::BTreeMap::new(),
+            extension_id: None,
+            extension_version: None,
         }
     }
 }
@@ -141,9 +166,19 @@ pub struct PluginParams {
     macro_scale_maxs: [AtomicU32; MACRO_COUNT],
     pub sample_rate: AtomicU32,
     pub meter_peak: AtomicU32,
-}
-
-impl Default for PluginParams {
+    pub block_size: AtomicU32,
+    pub debug_latency_enabled: AtomicBool,
+    pub last_processing_latency_ms: AtomicU32,
+    pub input_peak: AtomicU32,
+    pub sidechain_peak: AtomicU32,
+    pub waveform: Mutex<Vec<f32>>,
+    pub sidechain_waveform: Mutex<Vec<f32>>,
+    pub level_trace: Mutex<Vec<f32>>,
+    pub gain_trace: Mutex<Vec<f32>>,
+    pub input_channel_peaks: Mutex<Vec<f32>>,
+    pub output_channel_peaks: Mutex<Vec<f32>>,
+    pub sidechain_channel_peaks: Mutex<Vec<f32>>,
+}impl Default for PluginParams {
     fn default() -> Self {
         Self {
             macros: std::array::from_fn(MacroSlot::new),
@@ -166,6 +201,18 @@ impl Default for PluginParams {
             macro_scale_maxs: std::array::from_fn(|_| AtomicU32::new(1.0f32.to_bits())),
             sample_rate: AtomicU32::new(44_100.0f32.to_bits()),
             meter_peak: AtomicU32::new(0.0f32.to_bits()),
+            block_size: AtomicU32::new(0),
+            debug_latency_enabled: AtomicBool::new(false),
+            last_processing_latency_ms: AtomicU32::new(0.0f32.to_bits()),
+            input_peak: AtomicU32::new(0.0f32.to_bits()),
+            sidechain_peak: AtomicU32::new(0.0f32.to_bits()),
+            waveform: Mutex::new(Vec::new()),
+            sidechain_waveform: Mutex::new(Vec::new()),
+            level_trace: Mutex::new(Vec::new()),
+            gain_trace: Mutex::new(Vec::new()),
+            input_channel_peaks: Mutex::new(Vec::new()),
+            output_channel_peaks: Mutex::new(Vec::new()),
+            sidechain_channel_peaks: Mutex::new(Vec::new()),
         }
     }
 }
@@ -276,6 +323,51 @@ impl PluginParams {
             script.name = name.into();
             script.source = source.into();
             script.path = None;
+            script.modules.clear();
+            script.extension_id = None;
+            script.extension_version = None;
+        }
+        self.request_reload();
+    }
+
+    pub fn set_script_file(&self, path: &std::path::Path, source: impl Into<String>) {
+        {
+            let mut script = self.script.lock();
+            script.name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+            script.source = source.into();
+            script.path = Some(path.to_string_lossy().into_owned());
+            script.modules.clear();
+            script.extension_id = None;
+            script.extension_version = None;
+        }
+        self.request_reload();
+    }
+
+    pub fn set_extension(
+        &self,
+        path: &std::path::Path,
+        manifest: &crate::library::ExtensionManifest,
+        source: impl Into<String>,
+        modules: std::collections::BTreeMap<String, String>,
+    ) {
+        {
+            let mut script = self.script.lock();
+            script.name = manifest
+                .name
+                .clone()
+                .or_else(|| {
+                    path.file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                })
+                .unwrap_or_else(|| "extension".to_string());
+            script.source = source.into();
+            script.path = Some(path.to_string_lossy().into_owned());
+            script.modules = modules;
+            script.extension_id = Some(manifest.id.clone());
+            script.extension_version = Some(manifest.version.clone());
         }
         self.request_reload();
     }
@@ -289,12 +381,114 @@ impl PluginParams {
         f32::from_bits(self.sample_rate.load(Ordering::Relaxed))
     }
 
-    pub fn set_meter_peak(&self, peak: f32) {
+    pub fn set_block_size(&self, block_size: usize) {
+        self.block_size.store(block_size as u32, Ordering::Relaxed);
+    }
+
+    pub fn block_size(&self) -> usize {
+        self.block_size.load(Ordering::Relaxed) as usize
+    }
+
+    pub fn debug_latency_enabled(&self) -> bool {
+        self.debug_latency_enabled.load(Ordering::Relaxed)
+    }
+
+    pub fn set_debug_latency_enabled(&self, enabled: bool) {
+        self.debug_latency_enabled.store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn last_processing_latency_ms(&self) -> f32 {
+        f32::from_bits(self.last_processing_latency_ms.load(Ordering::Relaxed))
+    }
+
+    pub fn set_last_processing_latency_ms(&self, value: f32) {
+        self.last_processing_latency_ms.store(value.to_bits(), Ordering::Relaxed);
+    }    pub fn set_meter_peak(&self, peak: f32) {
         self.meter_peak.store(peak.to_bits(), Ordering::Relaxed);
     }
 
     pub fn meter_peak(&self) -> f32 {
         f32::from_bits(self.meter_peak.load(Ordering::Relaxed))
+    }
+
+    pub fn set_input_peak(&self, peak: f32) {
+        self.input_peak.store(peak.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn input_peak(&self) -> f32 {
+        f32::from_bits(self.input_peak.load(Ordering::Relaxed))
+    }
+
+    pub fn set_sidechain_peak(&self, peak: f32) {
+        self.sidechain_peak.store(peak.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn sidechain_peak(&self) -> f32 {
+        f32::from_bits(self.sidechain_peak.load(Ordering::Relaxed))
+    }
+
+    pub fn set_waveform(&self, samples: &[f32]) {
+        *self.waveform.lock() = samples.to_vec();
+    }
+
+    pub fn waveform(&self) -> Vec<f32> {
+        self.waveform.lock().clone()
+    }
+
+    pub fn set_sidechain_waveform(&self, samples: &[f32]) {
+        *self.sidechain_waveform.lock() = samples.to_vec();
+    }
+
+    pub fn sidechain_waveform(&self) -> Vec<f32> {
+        self.sidechain_waveform.lock().clone()
+    }
+
+    pub fn push_level_trace(&self, value: f32) {
+        let mut trace = self.level_trace.lock();
+        trace.push(value);
+        if trace.len() > 128 {
+            trace.remove(0);
+        }
+    }
+
+    pub fn level_trace(&self) -> Vec<f32> {
+        self.level_trace.lock().clone()
+    }
+
+    pub fn push_gain_trace(&self, value: f32) {
+        let mut trace = self.gain_trace.lock();
+        trace.push(value);
+        if trace.len() > 128 {
+            trace.remove(0);
+        }
+    }
+
+    pub fn gain_trace(&self) -> Vec<f32> {
+        self.gain_trace.lock().clone()
+    }
+
+    pub fn set_input_channel_peaks(&self, peaks: &[f32]) {
+        *self.input_channel_peaks.lock() = peaks.to_vec();
+    }
+
+    pub fn input_channel_peaks(&self) -> Vec<f32> {
+        self.input_channel_peaks.lock().clone()
+    }
+
+    pub fn set_output_channel_peaks(&self, peaks: &[f32]) {
+        *self.output_channel_peaks.lock() = peaks.to_vec();
+    }
+
+    pub fn output_channel_peaks(&self) -> Vec<f32> {
+        self.output_channel_peaks.lock().clone()
+    }
+
+    pub fn set_sidechain_channel_peaks(&self, peaks: &[f32]) {
+        *self.sidechain_channel_peaks.lock() = peaks.to_vec();
+    }
+
+    pub fn sidechain_channel_peaks(&self) -> Vec<f32> {
+        self.sidechain_channel_peaks.lock().clone()
     }
 }
 

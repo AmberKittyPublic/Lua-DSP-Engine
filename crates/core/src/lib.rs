@@ -1,5 +1,6 @@
 pub mod audio;
 pub mod editor;
+pub mod library;
 pub mod lua;
 pub mod params;
 pub mod synth;

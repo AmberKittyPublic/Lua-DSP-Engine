@@ -7,6 +7,7 @@
   dependencies.
 - To cross-build Windows GNU binaries from Linux, an x86-64 MinGW-w64 toolchain and
   the `x86_64-pc-windows-gnu` Rust target.
+- At runtime, the Linux file picker uses the desktop's XDG desktop portal.
 
 ## Development
 
@@ -19,16 +20,39 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo build --workspace
 ```
 
+## All Platforms
+
+Use the repository build script to build and package every supported platform
+that has a usable toolchain:
+
+```sh
+./build-all.sh
+./build-all.sh --platform linux
+./build-all.sh --platform windows
+./build-all.sh --platform macos
+```
+
+The script writes platform folders and ZIP files under `dist/`:
+
+- `dist/linux`
+- `dist/windows`
+- `dist/macos`
+
+Linux and Windows are built from this repository on Linux. macOS requires the
+`x86_64-apple-darwin` and `aarch64-apple-darwin` Rust targets plus a macOS
+linker such as osxcross; when those are unavailable, the script skips macOS and
+prints setup instructions. GitHub Actions builds all three platforms natively.
+
 The workspace contains `lua-plugin-core`, `lua-plugin-instrument`,
 `lua-plugin-audio-fx`, and `lua-plugin-midi-fx`. Core tests cover voice allocation,
 Lua APIs, factory-script loading, and the MIDI arpeggiator's generated note events.
 
 ## Documentation Maintenance
 
-Keep the user-facing docs and `context/agents.md` current as implementation changes
+Keep the user-facing docs and `agents.md` current as implementation changes
 are made. Update them in the same work as changes to public APIs, callbacks,
 parameters, plugin behavior, factory examples, build commands, or project
-conventions. See [Agent and Contributor Context](../context/agents.md) for the
+conventions. See [Agent and Contributor Context](../agents.md) for the
 project-specific workflow.
 
 ## Windows GNU Cross-Build

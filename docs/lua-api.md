@@ -17,6 +17,25 @@ All kinds expose `host.role`, which is `"audio"` for the processing Lua state an
 `"ui"` for the UI Lua state. The states are independent; their local Lua data is
 not shared.
 
+## Script Library
+
+Opening a plugin editor creates this library on first use:
+
+```text
+Documents/Lua Plugin Host/
+  scripts/
+    instrument/
+    audio-fx/
+    midi-fx/
+  presets/
+```
+
+Bundled factory scripts are copied into the matching `scripts/<kind>/` folder only
+when a file with that name is missing; existing user copies are not overwritten.
+The **Load script...** button opens the OS file picker in that folder by default.
+The loaded source, file name, and path are saved in the plugin state, so moving the
+original file does not unload the script from an existing instance.
+
 ## Callback Summary
 
 | Callback | Instrument | Audio FX | MIDI FX | Purpose |
@@ -120,6 +139,14 @@ end
 | `host.voice_mode` | Effective instrument mode: `"mono"` or `"poly"`. |
 | `host.max_voices` | Effective maximum voice count. |
 | `host.meter()` | Last measured audio output peak in linear amplitude; it may exceed `1.0`. MIDI FX does not produce this meter. |
+| `host.input_meter()` | Last measured input peak in linear amplitude. |
+| `host.sidechain_meter()` | Last measured sidechain peak in linear amplitude. |
+| `host.input_channel_meter(channel?)` | Per-channel input peak. |
+| `host.output_channel_meter(channel?)` | Per-channel output peak. |
+| `host.sidechain_channel_meter(channel?)` | Per-channel sidechain peak. |
+| `host.level_trace()` | Recent input peak history as a list. |
+| `host.gain_trace()` | Recent gain-reduction history as a list. |
+| `host.trace(value)` | Records a value into the gain-reduction history. |
 
 Transport fields are updated for processing callbacks. Do not assume a meaningful
 `host.num_samples` or transport position during `draw()`.
@@ -364,6 +391,7 @@ for each block you intend to advance.
 expose arbitrary drawing.
 
 - `ui.heading(text)`
+- `ui.colored_heading(text, color)` draws a heading in the named or hex color (for example `"red"` or `"#ff3333"`).
 - `ui.label(text)`
 - `ui.separator()` draws a separator oriented to the current layout.
 - `ui.separator_horizontal()` always draws a horizontal line.
@@ -371,13 +399,40 @@ expose arbitrary drawing.
 - `ui.space(pixels?)`, defaulting to 8 logical pixels.
 - `ui.button(id, label)` draws a button. A click currently produces only a temporary visual highlight; click state is not returned to Lua yet.
 - `ui.param(index, label?, scale?)` draws a slider for macro `1..64`. `scale` uses the same object or array form as `params.set_range()` and makes the slider display the script-domain value. Double-clicking its label resets to the script default, or `0` if none was declared.
+- `ui.knob(index, label?, scale?)` binds a rotary control to macro `1..64`. It accepts the same optional scale spec as `ui.param()`; drag up/right to increase, and double-click the knob or label to reset to the script default.
+- `ui.toggle(index, label?)` binds a checkbox to macro `1..64`. It reads the normalized macro as on at `0.5` or above and writes `0` or `1`.
 - `ui.radio_param(index, label, choices)` binds a radio group to macro `1..64`. It requires at least two string choices; the choices map evenly from normalized macro value `0` to `1`.
 - `ui.meter(value, label?)` draws a progress bar clamped to `0..1`.
+- `ui.colored_meter(value, label?, color)` draws a progress bar with the supplied fill color.
+- `ui.vertical_meter(value)` draws a vertical level meter with green/orange/red segments.
+- `ui.curve(drive, bias, shape, output)` draws a small input/output transfer curve for a waveshaper.
+- `ui.colored_heading(text, color)` draws a heading in the named or hex color.
+- `ui.graph(function() ... end)` allocates a graph area; child `ui.plot(...)` calls draw series in that area.
+- `ui.plot(values, color?)` draws a polyline series in the current graph area.
+- `ui.level_graph()` draws input level and gain-reduction traces.
+- `ui.compression_curve(threshold, ratio, knee)` draws a compressor transfer curve.
+- `ui.compressor_graph(threshold, ratio, knee)` draws level traces with a compression curve overlay.
+- `ui.waveform()` draws the last audio block waveform.
 - `ui.row(function() ... end)` lays out child widgets horizontally.
 - `ui.column(function() ... end)` lays out child widgets vertically.
+- `ui.group(function() ... end)` or `ui.group(title, function() ... end)` draws its children in a grouped frame with an optional title.
+- `ui.collapsing(title, function() ... end)` draws a collapsible section that starts open.
 
-Rows and columns must be properly nested. `ui.button()` IDs are used to track the
-temporary click highlight, not as a Lua callback.
+Rows, columns, groups, and collapsing sections must be properly nested.
+`ui.button()` IDs are used to track the temporary click highlight, not as a Lua
+callback.
+
+```lua
+function draw()
+    ui.group("Oscillator", function()
+        ui.knob(1, "Level")
+        ui.toggle(2, "Enabled")
+        ui.collapsing("Advanced", function()
+            ui.param(3, "Detune")
+        end)
+    end)
+end
+```
 
 The same double-click reset works on labels in the editor's **All macros** list.
 Use `ui.radio_param()` for discrete selections that must also be visible to the

@@ -191,7 +191,71 @@ impl LuaHost {
             lua.create_function(move |_, ()| Ok(meter_params.meter_peak() as f64))?,
         )?;
 
-        let globals = lua.globals();
+        let input_meter_params = self.params.clone();
+        host_table.set(
+            "input_meter",
+            lua.create_function(move |_, ()| Ok(input_meter_params.input_peak() as f64))?,
+        )?;
+
+        let sidechain_meter_params = self.params.clone();
+        host_table.set(
+            "sidechain_meter",
+            lua.create_function(move |_, ()| Ok(sidechain_meter_params.sidechain_peak() as f64))?,
+        )?;
+
+        macro_rules! channel_meter_fn {
+            ($name:expr, $peaks:expr) => {{
+                let params = self.params.clone();
+                let index = $peaks;
+                lua.create_function(move |_, channel: Option<usize>| {
+                    let peaks = match index {
+                        0 => params.input_channel_peaks(),
+                        1 => params.output_channel_peaks(),
+                        _ => params.sidechain_channel_peaks(),
+                    };
+                    let channel = channel.unwrap_or(0);
+                    Ok(peaks.get(channel).copied().unwrap_or(0.0) as f64)
+                })?
+            }};
+        }
+
+        host_table.set("input_channel_meter", channel_meter_fn!(0, 0))?;
+        host_table.set("output_channel_meter", channel_meter_fn!(1, 1))?;
+        host_table.set("sidechain_channel_meter", channel_meter_fn!(2, 2))?;
+                let trace_params = self.params.clone();
+        host_table.set(
+            "trace",
+            lua.create_function(move |_, value: f64| {
+                trace_params.push_gain_trace(value as f32);
+                Ok(())
+            })?,
+        )?;
+
+        let level_trace_params = self.params.clone();
+        host_table.set(
+            "level_trace",
+            lua.create_function(move |lua, ()| {
+                let values = level_trace_params.level_trace();
+                let table = lua.create_table()?;
+                for (index, value) in values.iter().enumerate() {
+                    table.set(index + 1, *value as f64)?;
+                }
+                Ok(table)
+            })?,
+        )?;
+
+        let gain_trace_params = self.params.clone();
+        host_table.set(
+            "gain_trace",
+            lua.create_function(move |lua, ()| {
+                let values = gain_trace_params.gain_trace();
+                let table = lua.create_table()?;
+                for (index, value) in values.iter().enumerate() {
+                    table.set(index + 1, *value as f64)?;
+                }
+                Ok(table)
+            })?,
+        )?;        let globals = lua.globals();
         globals.set("host", &host_table)?;
         let defaults_open = install_params_api(&lua, &globals, self.params.clone())?;
         install_wave_api(&lua, &globals)?;
@@ -220,6 +284,13 @@ impl LuaHost {
         self.params.clear_macro_scales();
         self.params.set_voice_mode_override(None);
         self.params.set_max_voices_override(None);
+        let modules = {
+            let script = self.params.script.lock();
+            script.modules.clone()
+        };
+        if !modules.is_empty() {
+            install_require_api(&lua, &globals, modules)?;
+        }
         lua.load(source.1.as_str())
             .set_name(source.0.as_str())
             .exec()?;
@@ -292,6 +363,39 @@ impl LuaHost {
         }
 
         let num_samples = buffer.samples();
+        self.params.set_block_size(num_samples);
+
+        let main_channels = buffer.channels();
+        let aux_channels = aux.inputs.first().map(|buffer| buffer.channels()).unwrap_or(0);
+        let mut input_peak = 0.0f32;
+        let mut sidechain_peak = 0.0f32;
+        let mut input_channel_peaks = vec![0.0f32; main_channels.max(1)];
+        let mut sidechain_channel_peaks = vec![0.0f32; aux_channels.max(1)];
+        let capture = num_samples.min(512);
+        let mut sidechain_samples = Vec::with_capacity(capture);
+        for sample in 0..num_samples {
+        for (channel, peak) in input_channel_peaks.iter_mut().enumerate().take(main_channels) {
+            let value = buffer.as_slice()[channel][sample].abs();
+            input_peak = input_peak.max(value);
+            *peak = (*peak).max(value);
+        }
+
+            if aux_channels > 0 {
+                let value = aux.inputs[0].as_slice()[0][sample];
+                sidechain_peak = sidechain_peak.max(value.abs());
+                sidechain_channel_peaks[0] = sidechain_channel_peaks[0].max(value.abs());
+                if sample < capture {
+                    sidechain_samples.push(value);
+                }
+            }
+        }
+        self.params.set_input_peak(input_peak);
+        self.params.set_sidechain_peak(sidechain_peak);
+        self.params.set_input_channel_peaks(&input_channel_peaks);
+        self.params.set_sidechain_channel_peaks(&sidechain_channel_peaks);
+        self.params.set_sidechain_waveform(&sidechain_samples);
+        self.params.push_level_trace(input_peak);
+
         let _ = host_table.set("sample_rate", sample_rate);
         let _ = host_table.set("num_samples", num_samples as u64);
         let _ = host_table.set("tempo", tempo);
@@ -366,6 +470,27 @@ impl LuaHost {
         }
         let peak = access.peak();
         self.audio_bridge.clear();
+
+        let capture = num_samples.min(512);
+        let output_samples: Vec<f32> = (0..capture)
+            .map(|sample| {
+                buffer
+                    .as_slice()
+                    .first()
+                    .map(|channel| channel[sample])
+                    .unwrap_or(0.0)
+            })
+            .collect();
+        self.params.set_waveform(&output_samples);
+
+        let output_channels = buffer.channels().max(1);
+        let mut output_channel_peaks = vec![0.0f32; output_channels];
+        for (channel, peak) in output_channel_peaks.iter_mut().enumerate().take(output_channels) {
+            for sample in 0..num_samples {
+                *peak = (*peak).max(buffer.as_slice()[channel][sample].abs());
+            }
+        }
+        self.params.set_output_channel_peaks(&output_channel_peaks);
 
         match error {
             Some(error) => self.last_error = Some(error),
@@ -456,6 +581,7 @@ impl LuaHost {
         pos_beats: Option<f64>,
     ) {
         self.maybe_reload();
+        self.params.set_block_size(num_samples);
 
         let Some(loaded) = self.loaded.as_ref() else {
             return;
@@ -639,6 +765,55 @@ fn set_script_macro_default(params: &PluginParams, index: usize, value: f32) -> 
         )));
     }
     params.set_script_macro_default(zero_based, value);
+    Ok(())
+}
+
+fn install_require_api(
+    lua: &Lua,
+    globals: &Table,
+    modules: std::collections::BTreeMap<String, String>,
+) -> mlua::Result<()> {
+    let module_sources = lua.create_table()?;
+    for (name, source) in &modules {
+        module_sources.set(name.clone(), source.clone())?;
+    }
+
+    let cache = lua.create_table()?;
+    let modules_for_require = modules.clone();
+    let require = lua.create_function(move |lua, name: String| {
+        let mut normalized = name.replace('\\', "/");
+        while normalized.starts_with("./") {
+            normalized = normalized[2..].to_string();
+        }
+        if let Some(stripped) = normalized.strip_suffix(".lua") {
+            normalized = stripped.to_string();
+        }
+
+        if let Ok(value) = cache.get::<mlua::Value>(normalized.clone())
+            && !value.is_nil()
+        {
+            return Ok(value);
+        }
+
+        let source = modules_for_require
+            .get(&normalized)
+            .ok_or_else(|| mlua::Error::RuntimeError(format!("module not found: {name}")))?;
+        let function = lua
+            .load(source.as_str())
+            .set_name(normalized.as_str())
+            .into_function()?;
+        let result = function.call::<mlua::Value>(())?;
+        let result = if result.is_nil() {
+            mlua::Value::Boolean(true)
+        } else {
+            result
+        };
+        cache.set(normalized, result.clone())?;
+        Ok(result)
+    })?;
+    // Keep module source table reachable for debugging/introspection.
+    globals.set("__extension_modules", module_sources)?;
+    globals.set("require", require)?;
     Ok(())
 }
 
@@ -1003,6 +1178,14 @@ fn install_ui_api(
 
     let ui = builder.clone();
     table.set(
+        "colored_heading",
+        lua.create_function(move |_, (text, color): (String, String)| {
+            ui.lock().colored_heading(text, color);
+            Ok(())
+        })?,
+    )?;
+    let ui = builder.clone();
+    table.set(
         "separator",
         lua.create_function(move |_, ()| {
             ui.lock().separator();
@@ -1047,7 +1230,7 @@ fn install_ui_api(
     )?;
 
     let ui = builder.clone();
-    let macro_params = params;
+    let macro_params = params.clone();
     table.set(
         "param",
         lua.create_function(
@@ -1075,6 +1258,52 @@ fn install_ui_api(
                 Ok(())
             },
         )?,
+    )?;
+
+    let ui = builder.clone();
+    let macro_params = params;
+    table.set(
+        "knob",
+        lua.create_function(
+            move |_, (index, label, spec): (usize, Option<String>, Option<Table>)| {
+                let zero_based = index.checked_sub(1).filter(|index| *index < MACRO_COUNT);
+                let Some(zero_based) = zero_based else {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "parameter index out of range: {index}"
+                    )));
+                };
+
+                let scale = if let Some(spec) = spec {
+                    let scale = parse_macro_scale(&spec)?;
+                    macro_params.set_macro_scale(zero_based, scale);
+                    Some(scale)
+                } else {
+                    macro_params.macro_scale(zero_based)
+                };
+
+                ui.lock().knob(
+                    index,
+                    label.unwrap_or_else(|| format!("Macro {index}")),
+                    scale,
+                );
+                Ok(())
+            },
+        )?,
+    )?;
+
+    let ui = builder.clone();
+    table.set(
+        "toggle",
+        lua.create_function(move |_, (index, label): (usize, Option<String>)| {
+            if index == 0 || index > MACRO_COUNT {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "parameter index out of range: {index}"
+                )));
+            }
+            ui.lock()
+                .toggle(index, label.unwrap_or_else(|| format!("Macro {index}")));
+            Ok(())
+        })?,
     )?;
 
     let ui = builder.clone();
@@ -1112,6 +1341,101 @@ fn install_ui_api(
 
     let ui = builder.clone();
     table.set(
+        "compression_curve",
+        lua.create_function(move |_, (threshold, ratio, knee): (f32, f32, f32)| {
+            ui.lock().compression_curve(threshold, ratio, knee);
+            Ok(())
+        })?,
+    )?;
+
+    let ui = builder.clone();
+    table.set(
+        "compressor_graph",
+        lua.create_function(move |_, (threshold, ratio, knee): (f32, f32, f32)| {
+            ui.lock().compressor_graph(threshold, ratio, knee);
+            Ok(())
+        })?,
+    )?;
+
+    let ui = builder.clone();
+    table.set(
+        "waveform",
+        lua.create_function(move |_, ()| {
+            ui.lock().waveform();
+            Ok(())
+        })?,
+    )?;
+
+    let ui = builder.clone();
+    table.set(
+        "vertical_meter",
+        lua.create_function(move |_, value: f32| {
+            ui.lock().vertical_meter(value);
+            Ok(())
+        })?,
+    )?;
+
+    let ui = builder.clone();
+    table.set(
+        "graph",
+        lua.create_function(move |_, f: Function| {
+            ui.lock().begin_graph();
+            let result = f.call::<()>(());
+            ui.lock()
+                .end_graph()
+                .map_err(|error| mlua::Error::RuntimeError(error.to_string()))?;
+            result
+        })?,
+    )?;
+
+    let ui = builder.clone();
+    table.set(
+        "plot",
+        lua.create_function(move |_, args: mlua::MultiValue| {
+            let values: Table = args
+                .front()
+                .and_then(|value| value.as_table().cloned())
+                .ok_or_else(|| mlua::Error::FromLuaConversionError {
+                    from: "argument",
+                    to: "table".to_string(),
+                    message: Some("plot requires a value table".to_string()),
+                })?;
+            let color = args
+                .get(1)
+                .and_then(|value| value.as_string().map(|value| value.to_str().map(|s| s.to_string()).unwrap_or_default()));
+            let mut points = Vec::new();
+            for value in values.sequence_values::<f64>() {
+                points.push(value? as f32);
+            }
+            ui.lock().plot(points, color);
+            Ok(())
+        })?,
+    )?;    let ui = builder.clone();
+    table.set(
+        "level_graph",
+        lua.create_function(move |_, ()| {
+            ui.lock().level_graph();
+            Ok(())
+        })?,
+    )?;
+
+    let ui = builder.clone();
+    table.set(
+        "compression_curve",
+        lua.create_function(move |_, (threshold, ratio, knee): (f32, f32, f32)| {
+            ui.lock().compression_curve(threshold, ratio, knee);
+            Ok(())
+        })?,
+    )?;    let ui = builder.clone();
+    table.set(
+        "curve",
+        lua.create_function(move |_, (drive, bias, shape, output): (f32, f32, f32, f32)| {
+            ui.lock().curve(drive, bias, shape, output);
+            Ok(())
+        })?,
+    )?;
+    let ui = builder.clone();
+    table.set(
         "row",
         lua.create_function(move |_, f: Function| {
             ui.lock().begin_row();
@@ -1124,7 +1448,7 @@ fn install_ui_api(
         })?,
     )?;
 
-    let ui = builder;
+    let ui = builder.clone();
     table.set(
         "column",
         lua.create_function(move |_, f: Function| {
@@ -1133,6 +1457,43 @@ fn install_ui_api(
             let end = ui
                 .lock()
                 .end_column()
+                .map_err(|error| mlua::Error::RuntimeError(error.to_string()));
+            result.and(end)
+        })?,
+    )?;
+
+    let ui = builder.clone();
+    table.set(
+        "group",
+        lua.create_function(move |_, (first, second): (Value, Option<Function>)| {
+            let (title, f) = match (first, second) {
+                (Value::String(title), Some(f)) => (Some(title.to_str()?.to_string()), f),
+                (Value::Function(f), None) => (None, f),
+                _ => {
+                    return Err(mlua::Error::RuntimeError(
+                        "ui.group() expects a function, or a title and function".to_string(),
+                    ));
+                }
+            };
+            ui.lock().begin_group(title);
+            let result = f.call::<()>(());
+            let end = ui
+                .lock()
+                .end_group()
+                .map_err(|error| mlua::Error::RuntimeError(error.to_string()));
+            result.and(end)
+        })?,
+    )?;
+
+    let ui = builder;
+    table.set(
+        "collapsing",
+        lua.create_function(move |_, (title, f): (String, Function)| {
+            ui.lock().begin_collapsing(title);
+            let result = f.call::<()>(());
+            let end = ui
+                .lock()
+                .end_collapsing()
                 .map_err(|error| mlua::Error::RuntimeError(error.to_string()));
             result.and(end)
         })?,
@@ -1251,9 +1612,10 @@ mod tests {
         commands.iter().any(|command| {
             predicate(command)
                 || match command {
-                    UiCommand::Row(children) | UiCommand::Column(children) => {
-                        has_command(children, predicate)
-                    }
+                    UiCommand::Row(children)
+                    | UiCommand::Column(children)
+                    | UiCommand::Group { children, .. }
+                    | UiCommand::Collapsing { children, .. } => has_command(children, predicate),
                     _ => false,
                 }
         })
@@ -1421,6 +1783,136 @@ mod tests {
     }
 
     #[test]
+    fn layout_and_control_widgets_build_nested_commands() {
+        let params = Arc::new(PluginParams::default());
+        params.set_script(
+            "layout.lua",
+            r#"
+            function draw()
+                ui.group("Oscillator", function()
+                    ui.knob(1, "Level")
+                    ui.toggle(2, "Enabled")
+                    ui.group(function()
+                        ui.collapsing("Advanced", function()
+                            ui.label("details")
+                        end)
+                    end)
+                end)
+            end
+            "#,
+        );
+        let mut host = LuaHost::new(params, PluginKind::Instrument, HostRole::Ui, 44_100.0);
+        assert!(host.last_error().is_none(), "{:?}", host.last_error());
+
+        let commands = host.build_ui_frame(Vec::new()).expect("draw() failed");
+        assert!(has_command(&commands, |command| matches!(
+            command,
+            UiCommand::Group {
+                title: Some(title),
+                ..
+            } if title == "Oscillator"
+        )));
+        assert!(has_command(&commands, |command| matches!(
+            command,
+            UiCommand::Group { title: None, .. }
+        )));
+        assert!(has_command(&commands, |command| matches!(
+            command,
+            UiCommand::Knob { index: 1, .. }
+        )));
+        assert!(has_command(&commands, |command| matches!(
+            command,
+            UiCommand::Toggle { index: 2, .. }
+        )));
+        assert!(has_command(&commands, |command| matches!(
+            command,
+            UiCommand::Collapsing { title, .. } if title == "Advanced"
+        )));
+        assert!(has_command(&commands, |command| matches!(
+            command,
+            UiCommand::Label(text) if text == "details"
+        )));
+    }
+
+    #[test]
+    fn extension_modules_are_available_through_require() {
+        let params = Arc::new(PluginParams::default());
+        params.set_script(
+            "main.lua",
+            r#"
+            local voice = require("voice")
+            local nested = require("effects/filter")
+            function draw()
+                ui.label("value: " .. voice.value)
+                ui.label("nested: " .. nested.name)
+            end
+            "#,
+        );
+        {
+            let mut script = params.script.lock();
+            script
+                .modules
+                .insert("voice".to_string(), "return { value = 42 }".to_string());
+            script.modules.insert(
+                "effects/filter".to_string(),
+                "return { name = 'filter' }".to_string(),
+            );
+        }
+
+        let mut host = LuaHost::new(params, PluginKind::Instrument, HostRole::Ui, 44_100.0);
+        assert!(host.last_error().is_none(), "{:?}", host.last_error());
+
+        let commands = host.build_ui_frame(Vec::new()).expect("draw() failed");
+        assert!(has_command(&commands, |command| matches!(
+            command,
+            UiCommand::Label(text) if text == "value: 42"
+        )));
+        assert!(has_command(&commands, |command| matches!(
+            command,
+            UiCommand::Label(text) if text == "nested: filter"
+        )));
+    }
+
+    #[test]
+    fn acid_extension_loads_and_builds_ui() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../factory/extensions/acid-303");
+        let package = crate::library::read_extension(&root.join("manifest.json"))
+            .expect("acid extension should load");
+        let params = Arc::new(PluginParams::default());
+        params.set_extension(
+            &root.join("manifest.json"),
+            &package.manifest,
+            package.entry_source,
+            package.modules,
+        );
+        let mut host = LuaHost::new(params, PluginKind::Instrument, HostRole::Ui, 44_100.0);
+        assert!(host.last_error().is_none(), "{:?}", host.last_error());
+
+        let commands = host.build_ui_frame(Vec::new()).expect("draw() failed");
+        assert!(has_command(&commands, |command| matches!(
+            command,
+            UiCommand::Knob { index: 1, .. }
+        )));
+
+        let loaded = host.loaded.as_ref().expect("extension should be loaded");
+        let voice_fn = loaded
+            .process_voice_fn
+            .clone()
+            .expect("acid extension should define process_voice");
+        let voice = loaded.lua.create_table().expect("create voice table");
+        voice.set("id", 1u64).unwrap();
+        voice.set("note", 48u8).unwrap();
+        voice.set("channel", 0u8).unwrap();
+        voice.set("velocity", 0.9f32).unwrap();
+        voice.set("gate", true).unwrap();
+        voice.set("frequency", 130.8128f64).unwrap();
+        voice.set("age", 1u64).unwrap();
+        let result: bool = voice_fn.call(voice).expect("process_voice should run");
+        assert!(!result);
+    }
+
+    #[test]
     fn transpose_factory_binds_octaves_to_radio_macro_and_pairs_notes() {
         let params = Arc::new(PluginParams::default());
         params.set_script(
@@ -1521,10 +2013,10 @@ mod tests {
         let commands = host.build_ui_frame(Vec::new()).expect("draw() failed");
         assert!(has_command(&commands, |command| matches!(
             command,
-            UiCommand::Heading(_)
+            UiCommand::Heading { .. }
         )));
         assert!(has_command(&commands, |command| {
-            matches!(command, UiCommand::Param { index: 1, .. })
+            matches!(command, UiCommand::Knob { index: 1, .. })
         }));
     }
 
@@ -1590,6 +2082,11 @@ mod tests {
                 PluginKind::AudioFx,
                 include_str!("../../../factory/audio-fx/stereo-reverb.lua"),
                 0.55,
+            ),
+            (
+                PluginKind::AudioFx,
+                include_str!("../../../factory/audio-fx/saturator.lua"),
+                6.0,
             ),
         ];
 

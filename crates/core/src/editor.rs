@@ -1,5 +1,7 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc;
 use std::time::Duration;
 
 use egui::Color32;
@@ -11,6 +13,7 @@ use nice_plug_egui::{
     EguiEditor, EguiEditorState, EguiNiceSettings, NiceEguiApp, RepaintNotifier, create_egui_editor,
 };
 
+use crate::library;
 use crate::lua::{HostRole, LuaHost};
 use crate::params::{DEFAULT_SCRIPT, MacroScale, MacroScaleType, PluginKind, PluginParams};
 use crate::ui::UiCommand;
@@ -63,20 +66,20 @@ pub struct LuaEditor {
     host: Option<LuaHost>,
     loaded_version: u64,
     loaded_script: (String, String),
-    source: String,
+    script_dir: Option<PathBuf>,
+    library_initialized: bool,
+    pending_script_load: Option<mpsc::Receiver<Option<PathBuf>>>,
     clicked: Vec<String>,
     gui_ctx: Option<GuiContext>,
     error: Option<String>,
+    library_error: Option<String>,
 }
 
 impl LuaEditor {
     pub fn new(params: Arc<PluginParams>, kind: PluginKind) -> Self {
-        let (source, loaded_script) = {
+        let loaded_script = {
             let script = params.script.lock();
-            (
-                script.source.clone(),
-                (script.name.clone(), script.source.clone()),
-            )
+            (script.name.clone(), script.source.clone())
         };
         let loaded_version = params.script_version.load(Ordering::Acquire);
         let host = LuaHost::new(params.clone(), kind, HostRole::Ui, params.sample_rate());
@@ -88,10 +91,30 @@ impl LuaEditor {
             host: Some(host),
             loaded_version,
             loaded_script,
-            source,
+            script_dir: library::extensions_dir(kind),
+            library_initialized: false,
+            pending_script_load: None,
             clicked: Vec::new(),
             gui_ctx: None,
             error,
+            library_error: None,
+        }
+    }
+
+    fn ensure_library(&mut self) {
+        if self.library_initialized {
+            return;
+        }
+        self.library_initialized = true;
+        match library::install_factory_library() {
+            Ok(root) => {
+                self.script_dir = Some(
+                    root.join(library::EXTENSIONS_FOLDER)
+                        .join(self.kind.extension_folder_name()),
+                );
+                self.library_error = None;
+            }
+            Err(error) => self.library_error = Some(error),
         }
     }
 
@@ -114,8 +137,7 @@ impl LuaEditor {
         self.error = host.last_error().map(|error| error.to_string());
         self.host = Some(host);
         self.loaded_version = version;
-        self.loaded_script = script.clone();
-        self.source = script.1;
+        self.loaded_script = script;
     }
 
     fn render_header(&mut self, ui: &mut egui::Ui) {
@@ -174,28 +196,68 @@ impl LuaEditor {
         });
     }
 
-    fn render_script_editor(&mut self, ui: &mut egui::Ui) {
-        let mut source = std::mem::take(&mut self.source);
+    fn poll_pending_script_load(&mut self) {
+        let Some(receiver) = &self.pending_script_load else {
+            return;
+        };
 
+        match receiver.try_recv() {
+            Ok(Some(path)) => {
+                self.pending_script_load = None;
+                let is_manifest = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(|name| name.eq_ignore_ascii_case("manifest.json"))
+                    .unwrap_or(false);
+                if is_manifest {
+                    match library::read_extension(&path) {
+                        Ok(package) => {
+                            self.params.set_extension(
+                                &path,
+                                &package.manifest,
+                                package.entry_source,
+                                package.modules,
+                            );
+                            self.error = None;
+                        }
+                        Err(error) => self.error = Some(error),
+                    }
+                } else {
+                    match library::read_script(&path) {
+                        Ok(source) => {
+                            self.params.set_script_file(&path, source);
+                            self.error = None;
+                        }
+                        Err(error) => self.error = Some(error),
+                    }
+                }
+            }
+            Ok(None) => self.pending_script_load = None,
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.pending_script_load = None;
+                self.error = Some("script file dialog failed".to_string());
+            }
+        }
+    }
+
+    fn render_script_controls(&mut self, ui: &mut egui::Ui) {
+        self.poll_pending_script_load();
         egui::CollapsingHeader::new("Script")
-            .default_open(false)
+            .default_open(true)
             .show(ui, |ui| {
-                ui.add(
-                    egui::TextEdit::multiline(&mut source)
-                        .code_editor()
-                        .desired_rows(14)
-                        .desired_width(f32::INFINITY),
-                );
-
                 ui.horizontal(|ui| {
-                    if ui.button("Apply & reload").clicked() {
-                        self.params.set_script("user.lua", source.clone());
-                        self.error = None;
+                    let loading = self.pending_script_load.is_some();
+                    if ui
+                        .add_enabled(!loading, egui::Button::new("Load script..."))
+                        .clicked()
+                    {
+                        self.start_script_load();
                     }
 
                     if ui.button("Reset to default").clicked() {
-                        source = DEFAULT_SCRIPT.to_string();
-                        self.params.set_script("default.lua", source.clone());
+                        self.params
+                            .set_script("default.lua", DEFAULT_SCRIPT.to_string());
                         self.error = None;
                     }
 
@@ -203,9 +265,37 @@ impl LuaEditor {
                         self.reset_macros_to_script_defaults();
                     }
                 });
-            });
 
-        self.source = source;
+                let (name, path) = {
+                    let script = self.params.script.lock();
+                    (script.name.clone(), script.path.clone())
+                };
+                ui.label(match path {
+                    Some(path) => format!("loaded: {path}"),
+                    None => format!("loaded: {name}"),
+                });
+                if let Some(script_dir) = &self.script_dir {
+                    ui.label(format!("extensions folder: {}", script_dir.display()));
+                }
+                if let Some(error) = &self.library_error {
+                    ui.colored_label(Color32::LIGHT_RED, error);
+                }
+            });
+    }
+
+    fn start_script_load(&mut self) {
+        let script_dir = self.script_dir.clone();
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut dialog = rfd::FileDialog::new()
+                .set_title("Load script or extension")
+                .add_filter("Lua scripts and extensions", &["lua", "json"]);
+            if let Some(script_dir) = &script_dir {
+                dialog = dialog.set_directory(script_dir);
+            }
+            let _ = sender.send(dialog.pick_file());
+        });
+        self.pending_script_load = Some(receiver);
     }
 
     fn reset_macros_to_script_defaults(&self) {
@@ -246,6 +336,7 @@ impl NiceEguiApp for LuaEditor {
         };
         let setter = gui_ctx.param_setter();
 
+        self.ensure_library();
         self.ensure_host();
 
         let clicked = std::mem::take(&mut self.clicked);
@@ -280,9 +371,38 @@ impl NiceEguiApp for LuaEditor {
                 self.render_macros(ui, &setter);
 
                 ui.separator();
-                self.render_script_editor(ui);
-            });
+                self.render_script_controls(ui);
 
+                ui.separator();
+                egui::CollapsingHeader::new("Debug")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        let mut enabled = self.params.debug_latency_enabled();
+                        if ui.checkbox(&mut enabled, "Measure latency (adds overhead)").changed() {
+                            self.params.set_debug_latency_enabled(enabled);
+                        }
+                        let block_size = self.params.block_size();
+                        let sample_rate = self.params.sample_rate();
+                        let estimated_ms = if sample_rate > 0.0 {
+                            block_size as f32 / sample_rate * 1000.0
+                        } else {
+                            0.0
+                        };
+                        ui.label(format!("Block size: {block_size} samples"));
+                        ui.label(format!("Sample rate: {sample_rate:.0} Hz"));
+                        if self.params.debug_latency_enabled() {
+                            ui.label(format!(
+                                "Measured processing latency: {:.3} ms",
+                                self.params.last_processing_latency_ms()
+                            ));
+                        } else {
+                            ui.label(format!(
+                                "Estimated block latency: {estimated_ms:.2} ms"
+                            ));
+                        }
+                        ui.label(format!("Output peak: {:.3}", self.params.meter_peak()));
+                    });
+            });
         ui.ctx().request_repaint_after(Duration::from_millis(50));
     }
 }
@@ -299,8 +419,13 @@ fn render_commands(
             UiCommand::Label(text) => {
                 ui.label(text);
             }
-            UiCommand::Heading(text) => {
-                ui.heading(text);
+            UiCommand::Heading { text, color } => {
+                if let Some(color) = color {
+                    let color = parse_color(color);
+                    ui.label(egui::RichText::new(text).heading().strong().color(color));
+                } else {
+                    ui.heading(text);
+                }
             }
             UiCommand::Separator => {
                 ui.separator();
@@ -387,19 +512,278 @@ fn render_commands(
                     });
                 }
             }
-            UiCommand::Meter { value, label } => {
+            UiCommand::Knob {
+                index,
+                label,
+                scale,
+            } => {
+                if let Some(slot) = index
+                    .checked_sub(1)
+                    .and_then(|index| params.macros.get(index))
+                {
+                    let macro_index = *index - 1;
+                    render_macro_knob(
+                        ui,
+                        label,
+                        &slot.value,
+                        *scale,
+                        params.script_macro_default_normalized(macro_index),
+                        setter,
+                    );
+                }
+            }
+            UiCommand::Toggle { index, label } => {
+                if let Some(slot) = index
+                    .checked_sub(1)
+                    .and_then(|index| params.macros.get(index))
+                {
+                    let mut checked = slot.value.unmodulated_normalized_value() >= 0.5;
+                    if ui.checkbox(&mut checked, label).changed() {
+                        setter.begin_set_parameter(&slot.value);
+                        setter.set_parameter_normalized(&slot.value, f32::from(checked));
+                        setter.end_set_parameter(&slot.value);
+                    }
+                }
+            }
+            UiCommand::Meter { value, label, color } => {
                 ui.horizontal(|ui| {
                     if let Some(label) = label {
                         ui.label(label);
                     }
-                    ui.add(
-                        egui::ProgressBar::new(value.clamp(0.0, 1.0))
-                            .desired_width(180.0)
-                            .show_percentage(),
-                    );
+                    let mut bar = egui::ProgressBar::new(value.clamp(0.0, 1.0))
+                        .desired_width(180.0)
+                        .show_percentage();
+                    if let Some(color) = color {
+                        bar = bar.fill(parse_color(color));
+                    }
+                    ui.add(bar);
                 });
             }
-            UiCommand::Row(children) => {
+            UiCommand::Graph { children } => {
+                let size = egui::vec2(320.0, 120.0);
+                let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+                let painter = ui.painter_at(rect);
+                painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.0, egui::Color32::GRAY), egui::StrokeKind::Inside);
+                for child in children {
+                    if let UiCommand::Plot { values, color } = child {
+                        if values.is_empty() {
+                            continue;
+                        }
+                        let color = color
+                            .as_deref()
+                            .map(parse_color)
+                            .unwrap_or(egui::Color32::LIGHT_BLUE);
+                        let mut points = Vec::with_capacity(values.len());
+                        for (index, value) in values.iter().enumerate() {
+                            let x = rect.left()
+                                + index as f32 / (values.len().saturating_sub(1).max(1) as f32)
+                                    * rect.width();
+                            let y = rect.bottom() - value.clamp(0.0, 1.0) * rect.height();
+                            points.push(egui::pos2(x, y));
+                        }
+                        painter.add(egui::Shape::line(points, egui::Stroke::new(1.5, color)));
+                    }
+                }
+                painter.line_segment([rect.left_bottom(), rect.right_bottom()], egui::Stroke::new(1.0, egui::Color32::DARK_GRAY));
+            }
+            UiCommand::Plot { .. } => {}
+            UiCommand::VerticalMeter { value } => {
+                let size = egui::vec2(18.0, 90.0);
+                let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+                let painter = ui.painter_at(rect);
+                painter.rect_filled(rect, 0.0, egui::Color32::from_gray(30));
+                painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.0, egui::Color32::GRAY), egui::StrokeKind::Inside);
+                let value = value.clamp(0.0, 1.0);
+                let green_top = 0.6;
+                let orange_top = 0.8;
+                // segment heights
+                let segments = [(0.0f32, green_top, egui::Color32::GREEN), (green_top, orange_top, egui::Color32::from_rgb(255, 165, 0)), (orange_top, 1.0f32, egui::Color32::RED)];
+                for (start, end, color) in segments {
+                    let seg_start = start.min(value);
+                    let seg_end = end.min(value);
+                    if seg_end > seg_start {
+                        let bottom = rect.bottom() - seg_start * rect.height();
+                        let top = rect.bottom() - seg_end * rect.height();
+                        let seg_rect = egui::Rect::from_min_max(egui::pos2(rect.left(), top), egui::pos2(rect.right(), bottom));
+                        painter.rect_filled(seg_rect, 0.0, color);
+                    }
+                }
+            }
+            UiCommand::Waveform => {
+                let output = params.waveform();
+                let sidechain = params.sidechain_waveform();
+                let size = egui::vec2(320.0, 120.0);
+                let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+                let painter = ui.painter_at(rect);
+                painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.0, egui::Color32::GRAY), egui::StrokeKind::Inside);
+                if !output.is_empty() {
+                    let mut points = Vec::with_capacity(output.len());
+                    for (index, value) in output.iter().enumerate() {
+                        let x = rect.left() + index as f32 / (output.len().saturating_sub(1).max(1) as f32) * rect.width();
+                        let y = rect.center().y - value.clamp(-1.0, 1.0) * 0.5 * rect.height();
+                        points.push(egui::pos2(x, y));
+                    }
+                    painter.add(egui::Shape::line(points, egui::Stroke::new(1.5, egui::Color32::GREEN)));
+                }
+                if !sidechain.is_empty() {
+                    let mut points = Vec::with_capacity(sidechain.len());
+                    for (index, value) in sidechain.iter().enumerate() {
+                        let x = rect.left() + index as f32 / (sidechain.len().saturating_sub(1).max(1) as f32) * rect.width();
+                        let y = rect.center().y - value.clamp(-1.0, 1.0) * 0.5 * rect.height();
+                        points.push(egui::pos2(x, y));
+                    }
+                    painter.add(egui::Shape::line(points, egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 180, 0))));
+                }
+                painter.line_segment([rect.left_center(), rect.right_center()], egui::Stroke::new(1.0, egui::Color32::DARK_GRAY));
+            }
+            UiCommand::LevelGraph => {
+                let levels = params.level_trace();
+                let gains = params.gain_trace();
+                let size = egui::vec2(320.0, 120.0);
+                let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+                let painter = ui.painter_at(rect);
+                painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.0, egui::Color32::GRAY), egui::StrokeKind::Inside);
+                if !levels.is_empty() {
+                    let mut points = Vec::with_capacity(levels.len());
+                    for (index, value) in levels.iter().enumerate() {
+                        let x = rect.left() + index as f32 / (levels.len().saturating_sub(1).max(1) as f32) * rect.width();
+                        let y = rect.bottom() - value.clamp(0.0, 1.0) * rect.height();
+                        points.push(egui::pos2(x, y));
+                    }
+                    painter.add(egui::Shape::line(points, egui::Stroke::new(1.5, egui::Color32::GREEN)));
+                }
+                if !gains.is_empty() {
+                    let mut points = Vec::with_capacity(gains.len());
+                    for (index, value) in gains.iter().enumerate() {
+                        let x = rect.left() + index as f32 / (gains.len().saturating_sub(1).max(1) as f32) * rect.width();
+                        let y = rect.bottom() - value.clamp(0.0, 1.0) * rect.height();
+                        points.push(egui::pos2(x, y));
+                    }
+                    painter.add(egui::Shape::line(points, egui::Stroke::new(1.5, egui::Color32::RED)));
+                }
+                painter.line_segment([rect.left_bottom(), rect.right_bottom()], egui::Stroke::new(1.0, egui::Color32::DARK_GRAY));
+            }
+            UiCommand::CompressionCurve {
+                threshold,
+                ratio,
+                knee,
+            } => {
+                let size = egui::vec2(220.0, 120.0);
+                let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+                let painter = ui.painter_at(rect);
+                painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.0, egui::Color32::GRAY), egui::StrokeKind::Inside);
+                let mut points = Vec::with_capacity(129);
+                for index in 0..=128 {
+                    let input = index as f32 / 128.0;
+                    let input_db = -60.0 + input * 60.0;
+                    let over = (input_db - threshold).max(0.0);
+                    let knee_width = knee.max(0.001);
+                    let soft = if over < knee_width {
+                        over * over / (2.0 * knee_width)
+                    } else {
+                        over - knee_width / 2.0
+                    };
+                    let reduction = soft * (1.0 - 1.0 / ratio.max(1.0));
+                    let output_db = input_db - reduction;
+                    let output = ((output_db + 60.0) / 60.0).clamp(0.0, 1.0);
+                    let x = rect.left() + input * rect.width();
+                    let y = rect.bottom() - output * rect.height();
+                    points.push(egui::pos2(x, y));
+                }
+                painter.add(egui::Shape::line(points, egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 180, 0))));
+                // unity line
+                let unity = vec![
+                    egui::pos2(rect.left(), rect.bottom()),
+                    egui::pos2(rect.right(), rect.top()),
+                ];
+                painter.add(egui::Shape::line(unity, egui::Stroke::new(1.0, egui::Color32::DARK_GRAY)));
+            }
+            UiCommand::CompressorGraph {
+                threshold,
+                ratio,
+                knee,
+            } => {
+                let levels = params.level_trace();
+                let gains = params.gain_trace();
+                let size = egui::vec2(320.0, 120.0);
+                let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+                let painter = ui.painter_at(rect);
+                painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.0, egui::Color32::GRAY), egui::StrokeKind::Inside);
+                if !levels.is_empty() {
+                    let mut points = Vec::with_capacity(levels.len());
+                    for (index, value) in levels.iter().enumerate() {
+                        let x = rect.left() + index as f32 / (levels.len().saturating_sub(1).max(1) as f32) * rect.width();
+                        let y = rect.bottom() - value.clamp(0.0, 1.0) * rect.height();
+                        points.push(egui::pos2(x, y));
+                    }
+                    painter.add(egui::Shape::line(points, egui::Stroke::new(1.5, egui::Color32::GREEN)));
+                }
+                if !gains.is_empty() {
+                    let mut points = Vec::with_capacity(gains.len());
+                    for (index, value) in gains.iter().enumerate() {
+                        let x = rect.left() + index as f32 / (gains.len().saturating_sub(1).max(1) as f32) * rect.width();
+                        let y = rect.bottom() - value.clamp(0.0, 1.0) * rect.height();
+                        points.push(egui::pos2(x, y));
+                    }
+                    painter.add(egui::Shape::line(points, egui::Stroke::new(1.5, egui::Color32::RED)));
+                }
+                // overlay compression curve
+                let mut curve = Vec::with_capacity(129);
+                for index in 0..=128 {
+                    let input = index as f32 / 128.0;
+                    let input_db = -60.0 + input * 60.0;
+                    let over = (input_db - threshold).max(0.0);
+                    let knee_width = knee.max(0.001);
+                    let soft = if over < knee_width {
+                        over * over / (2.0 * knee_width)
+                    } else {
+                        over - knee_width / 2.0
+                    };
+                    let reduction = soft * (1.0 - 1.0 / ratio.max(1.0));
+                    let output_db = input_db - reduction;
+                    let output = ((output_db + 60.0) / 60.0).clamp(0.0, 1.0);
+                    let x = rect.left() + input * rect.width();
+                    let y = rect.bottom() - output * rect.height();
+                    curve.push(egui::pos2(x, y));
+                }
+                painter.add(egui::Shape::line(curve, egui::Stroke::new(2.0, egui::Color32::from_rgba_unmultiplied(255, 180, 0, 160))));
+                painter.line_segment([rect.left_bottom(), rect.right_bottom()], egui::Stroke::new(1.0, egui::Color32::DARK_GRAY));
+            }            UiCommand::Curve {
+                drive,
+                bias,
+                shape,
+                output,
+            } => {
+                let size = egui::vec2(180.0, 180.0);
+                let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+                let painter = ui.painter_at(rect);
+                painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.0, egui::Color32::GRAY), egui::StrokeKind::Inside);
+                let drive = 10.0f32.powf(drive / 20.0);
+                let output = 10.0f32.powf(output / 20.0);
+                let mut points = Vec::with_capacity(129);
+                for index in 0..=128 {
+                    let x = -1.0 + 2.0 * index as f32 / 128.0;
+                    let driven = (x + bias * 0.15) * drive;
+                    let saturation = 1.0 + shape * 4.0;
+                    let saturated = (driven * saturation).tanh();
+                    let y = (saturated * output).clamp(-1.0, 1.0);
+                    let px = rect.left() + (x + 1.0) * 0.5 * rect.width();
+                    let py = rect.center().y - y * 0.5 * rect.height();
+                    points.push(egui::pos2(px, py));
+                }
+                painter.add(egui::Shape::line(
+                    points,
+                    egui::Stroke::new(2.0, egui::Color32::RED),
+                ));
+                painter.line_segment(
+                    [rect.left_center(), rect.right_center()],
+                    egui::Stroke::new(1.0, egui::Color32::DARK_GRAY),
+                );
+                painter.line_segment(
+                    [rect.center_top(), rect.center_bottom()],
+                    egui::Stroke::new(1.0, egui::Color32::DARK_GRAY),
+                );
+            }            UiCommand::Row(children) => {
                 ui.horizontal(|ui| {
                     render_commands(ui, children, params, setter, clicked);
                 });
@@ -408,6 +792,21 @@ fn render_commands(
                 ui.vertical(|ui| {
                     render_commands(ui, children, params, setter, clicked);
                 });
+            }
+            UiCommand::Group { title, children } => {
+                ui.group(|ui| {
+                    if let Some(title) = title {
+                        ui.label(egui::RichText::new(title).strong());
+                    }
+                    render_commands(ui, children, params, setter, clicked);
+                });
+            }
+            UiCommand::Collapsing { title, children } => {
+                egui::CollapsingHeader::new(title)
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        render_commands(ui, children, params, setter, clicked);
+                    });
             }
         }
     }
@@ -451,6 +850,99 @@ fn render_macro_slider(
         setter.begin_set_parameter(param);
         setter.set_parameter_normalized(param, scale.normalize(value));
         setter.end_set_parameter(param);
+    }
+}
+
+fn render_macro_knob(
+    ui: &mut egui::Ui,
+    label: &str,
+    param: &FloatParam,
+    scale: Option<MacroScale>,
+    default_normalized: f32,
+    setter: &ParamSetter<'_>,
+) {
+    let scale = scale.unwrap_or(MacroScale {
+        kind: MacroScaleType::Float,
+        min: 0.0,
+        max: 1.0,
+    });
+    let size = 48.0;
+
+    ui.vertical(|ui| {
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click_and_drag());
+        let mut normalized = param.unmodulated_normalized_value();
+        if response.dragged() {
+            let delta = ui.input(|input| input.pointer.delta());
+            normalized = (normalized + (delta.x - delta.y) * 0.005).clamp(0.0, 1.0);
+            normalized = scale.normalize(scale.value(normalized));
+            setter.begin_set_parameter(param);
+            setter.set_parameter_normalized(param, normalized);
+            setter.end_set_parameter(param);
+        }
+        if response.double_clicked() {
+            normalized = default_normalized;
+            setter.begin_set_parameter(param);
+            setter.set_parameter_normalized(param, default_normalized);
+            setter.end_set_parameter(param);
+        }
+
+        let value = scale.value(normalized);
+        let value_text = match scale.kind {
+            MacroScaleType::Integer => format!("{value:.0}"),
+            MacroScaleType::Float => format!("{value:.2}"),
+        };
+        let visuals = ui.style().interact(&response);
+        let center = rect.center();
+        let radius = size * 0.42;
+        let painter = ui.painter();
+        painter.circle_filled(center, radius, visuals.bg_fill);
+        painter.circle_stroke(center, radius, visuals.bg_stroke);
+        let angle =
+            std::f32::consts::PI * 0.75 + normalized.clamp(0.0, 1.0) * std::f32::consts::PI * 1.5;
+        let direction = egui::vec2(angle.cos(), angle.sin());
+        painter.line_segment(
+            [
+                center + direction * radius * 0.3,
+                center + direction * radius * 0.9,
+            ],
+            egui::Stroke::new(2.0, visuals.fg_stroke.color),
+        );
+
+        let label_response = ui
+            .add(egui::Label::new(label).sense(egui::Sense::click()))
+            .on_hover_text("Drag to adjust; double-click to reset to the script default");
+        if label_response.double_clicked() {
+            setter.begin_set_parameter(param);
+            setter.set_parameter_normalized(param, default_normalized);
+            setter.end_set_parameter(param);
+        }
+        ui.label(egui::RichText::new(value_text).small());
+    });
+}
+
+fn parse_color(color: &str) -> Color32 {
+    match color.to_ascii_lowercase().as_str() {
+        "red" => Color32::RED,
+        "green" => Color32::GREEN,
+        "blue" => Color32::BLUE,
+        "yellow" => Color32::YELLOW,
+        "orange" => Color32::from_rgb(255, 165, 0),
+        "white" => Color32::WHITE,
+        "black" => Color32::BLACK,
+        "gray" | "grey" => Color32::GRAY,
+        _ => {
+            let hex = color.trim_start_matches('#');
+            if hex.len() == 6
+                && let (Ok(r), Ok(g), Ok(b)) = (
+                    u8::from_str_radix(&hex[0..2], 16),
+                    u8::from_str_radix(&hex[2..4], 16),
+                    u8::from_str_radix(&hex[4..6], 16),
+                )
+            {
+                return Color32::from_rgb(r, g, b);
+            }            Color32::RED
+        }
     }
 }
 

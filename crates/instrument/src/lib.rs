@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use lua_plugin_core::{EditorHost, HostRole, LuaEditorType, LuaHost, PluginKind, PluginParams};
 use nice_plug::prelude::*;
@@ -82,6 +83,12 @@ impl Plugin for LuaInstrument {
         aux: &mut AuxiliaryBuffers,
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
+        let measure = self.params.debug_latency_enabled();
+        let start = if measure {
+            Some(Instant::now())
+        } else {
+            None
+        };
         if let Some(host) = self.host.as_mut() {
             host.dispatch_midi(context);
 
@@ -96,6 +103,10 @@ impl Plugin for LuaInstrument {
             for channel in buffer.as_slice() {
                 channel.fill(0.0);
             }
+        }
+        if let Some(start) = start {
+            self.params
+                .set_last_processing_latency_ms(start.elapsed().as_secs_f32() * 1000.0);
         }
 
         if self.editor.is_open() {

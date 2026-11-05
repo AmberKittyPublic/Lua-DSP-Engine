@@ -90,12 +90,14 @@ function draw()
     ui.label("script: " .. host.script_name)
     ui.separator()
 
-    ui.row(function()
-        ui.param(1, "Output level")
-        ui.param(2, "Macro 2")
+    ui.group("Main controls", function()
+        ui.row(function()
+            ui.knob(1, "Output level")
+            ui.param(2, "Macro 2")
+        end)
     end)
 
     ui.separator()
     ui.meter(host.meter(), "output peak")
-    ui.label("Edit the script below, then press Apply & reload.")
+    ui.label("Load a script from the Documents script library.")
 end

@@ -16,6 +16,14 @@ Keep CLAP/VST3 plugins as thin, fixed plugin types. The extension supplies behav
 and presentation; the plugin host continues to own audio/MIDI ports, macros,
 automation, persistence, and the UI/audio thread boundary.
 
+## Current Baseline
+
+The implemented script loader currently creates
+`Documents/Lua Plugin Host/scripts/{instrument,audio-fx,midi-fx}` plus a `presets`
+folder and copies bundled factory scripts there. The layout below is the target
+extension/preset platform; migration should account for these existing script files
+rather than discarding or silently duplicating them.
+
 ## Proposed User Data Layout
 
 Use the platform's known Documents directory, not a hard-coded user profile path.
@@ -24,23 +32,44 @@ reserve an application-specific subfolder for cache and temporary files:
 
 ```text
 Documents/
-  extensions/
-    <extension-id>.lua
-    <extension-id>.zip
-    <extension-id>/                   # optional unpacked developer package
-      manifest.json
-      main.lua
-      modules/
-      assets/
-  presets/
-    <extension-id>/
-      <creator-id>/
-        <preset-id>.json
   Lua Plugin Host/
+    extensions/
+      synth/
+        <extension-id>.lua
+        <extension-id>.zip
+        <extension-id>/                   # optional unpacked developer package
+          manifest.json
+          main.lua
+          modules/
+          assets/
+      audio-fx/
+        <extension-id>.lua
+        <extension-id>.zip
+        <extension-id>/
+          manifest.json
+          main.lua
+          modules/
+          assets/
+      midi-fx/
+        <extension-id>.lua
+        <extension-id>.zip
+        <extension-id>/
+          manifest.json
+          main.lua
+          modules/
+          assets/
+    presets/
+      <extension-id>/
+        <creator-id>/
+          <preset-id>.json
     cache/
       extensions/
         <extension-id>/<content-hash>/ # validated/extracted ZIP contents
 ```
+
+Extension folders are separated by plugin type so an extension browser can show
+only extensions compatible with the current plugin. The instrument type uses the
+`synth` folder name; audio and MIDI effects use `audio-fx` and `midi-fx`.
 
 Use stable IDs for directories and references; display names are mutable and may
 not be unique. This keeps the proposed user-facing preset organization while
