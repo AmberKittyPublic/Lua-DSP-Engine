@@ -13,7 +13,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-gnu
-      - run: ./build-all.sh --platform linux
+      - run: bash ./build-all.sh --platform linux
       - uses: actions/upload-artifact@v4
         with:
           name: lumina-dsp-linux-x86_64
@@ -30,7 +30,7 @@ jobs:
         with:
           msystem: MINGW64
           install: mingw-w64-x86_64-gcc
-      - run: ./build-all.sh --platform windows
+      - run: bash ./build-all.sh --platform windows
         shell: bash
       - uses: actions/upload-artifact@v4
         with:
@@ -44,7 +44,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-apple-darwin,aarch64-apple-darwin
-      - run: ./build-all.sh --platform macos
+      - run: bash ./build-all.sh --platform macos
       - uses: actions/upload-artifact@v4
         with:
           name: lumina-dsp-macos-universal
