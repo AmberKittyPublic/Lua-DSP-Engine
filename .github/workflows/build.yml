@@ -1,0 +1,51 @@
+name: Build plugins
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+      - run: ./build-all.sh --platform linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lumina-dsp-linux-x86_64
+          path: dist/linux
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-gcc
+      - run: ./build-all.sh --platform windows
+        shell: bash
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lumina-dsp-windows-x86_64
+          path: dist/windows
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+      - run: ./build-all.sh --platform macos
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lumina-dsp-macos-universal
+          path: dist/macos
