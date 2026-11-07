@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use crate::audio::{AudioBridge, BlockAccess, MidiOut};
 use crate::params::{
     MACRO_COUNT, MAX_VOICES, MacroScale, MacroScaleType, PluginKind, PluginParams,
+    TOTAL_MACRO_COUNT,
 };
 use crate::synth::install_synth_api;
 use crate::ui::{UiBuilder, UiCommand};
@@ -300,6 +301,7 @@ impl LuaHost {
             self.params.clear_script_macro_defaults();
         }
         self.params.clear_macro_scales();
+        self.params.clear_internal_macro_scales();
         self.params.set_voice_mode_override(None);
         self.params.set_max_voices_override(None);
         let modules = {
@@ -838,20 +840,62 @@ fn install_params_api(
 ) -> mlua::Result<Arc<AtomicBool>> {
     let table = lua.create_table()?;
 
-    table.set("count", lua.create_function(move |_, ()| Ok(MACRO_COUNT))?)?;
+    table.set(
+        "count",
+        lua.create_function(move |_, ()| Ok(TOTAL_MACRO_COUNT))?,
+    )?;
 
     let values = params.clone();
     table.set(
         "get",
         lua.create_function(move |_, index: usize| {
-            let zero_based = index.checked_sub(1).filter(|index| *index < MACRO_COUNT);
+            let zero_based = index
+                .checked_sub(1)
+                .filter(|index| *index < TOTAL_MACRO_COUNT);
             let Some(zero_based) = zero_based else {
                 return Err(mlua::Error::RuntimeError(format!(
                     "parameter index out of range: {index}"
                 )));
             };
 
-            Ok(values.macro_value(zero_based) as f64)
+            let value = if zero_based < MACRO_COUNT {
+                values.macro_value(zero_based)
+            } else {
+                values.internal_macro_value(zero_based)
+            };
+            Ok(value as f64)
+        })?,
+    )?;
+
+    let values = params.clone();
+    table.set(
+        "set",
+        lua.create_function(move |_, (index, value): (usize, f32)| {
+            let zero_based = index
+                .checked_sub(1)
+                .filter(|index| *index < TOTAL_MACRO_COUNT);
+            let Some(zero_based) = zero_based else {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "parameter index out of range: {index}"
+                )));
+            };
+            if !value.is_finite() {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "macro value must be finite: {value}"
+                )));
+            }
+            if zero_based < MACRO_COUNT {
+                return Err(mlua::Error::RuntimeError(
+                    "host macros (1..64) cannot be set from Lua; use UI or automation".to_string(),
+                ));
+            }
+            // Store normalized value (apply scale if present)
+            let normalized = values
+                .internal_macro_scale(zero_based)
+                .map(|scale| scale.normalize(value))
+                .unwrap_or_else(|| value.clamp(0.0, 1.0));
+            values.set_internal_macro_value(zero_based, normalized);
+            Ok(())
         })?,
     )?;
 
@@ -859,13 +903,20 @@ fn install_params_api(
     table.set(
         "set_range",
         lua.create_function(move |_, (index, spec): (usize, Table)| {
-            let zero_based = index.checked_sub(1).filter(|index| *index < MACRO_COUNT);
+            let zero_based = index
+                .checked_sub(1)
+                .filter(|index| *index < TOTAL_MACRO_COUNT);
             let Some(zero_based) = zero_based else {
                 return Err(mlua::Error::RuntimeError(format!(
                     "parameter index out of range: {index}"
                 )));
             };
-            values.set_macro_scale(zero_based, parse_macro_scale(&spec)?);
+            let scale = parse_macro_scale(&spec)?;
+            if zero_based < MACRO_COUNT {
+                values.set_macro_scale(zero_based, scale);
+            } else {
+                values.set_internal_macro_scale(zero_based, scale);
+            }
             Ok(())
         })?,
     )?;
@@ -883,14 +934,21 @@ fn install_params_api(
     table.set(
         "default",
         lua.create_function(move |_, index: usize| {
-            let zero_based = index.checked_sub(1).filter(|index| *index < MACRO_COUNT);
+            let zero_based = index
+                .checked_sub(1)
+                .filter(|index| *index < TOTAL_MACRO_COUNT);
             let Some(zero_based) = zero_based else {
                 return Err(mlua::Error::RuntimeError(format!(
                     "parameter index out of range: {index}"
                 )));
             };
 
-            Ok(values.script_macro_default(zero_based) as f64)
+            let value = if zero_based < MACRO_COUNT {
+                values.script_macro_default(zero_based)
+            } else {
+                values.internal_macro_default(zero_based)
+            };
+            Ok(value as f64)
         })?,
     )?;
 
@@ -927,7 +985,9 @@ fn install_params_api(
 }
 
 fn set_script_macro_default(params: &PluginParams, index: usize, value: f32) -> mlua::Result<()> {
-    let zero_based = index.checked_sub(1).filter(|index| *index < MACRO_COUNT);
+    let zero_based = index
+        .checked_sub(1)
+        .filter(|index| *index < TOTAL_MACRO_COUNT);
     let Some(zero_based) = zero_based else {
         return Err(mlua::Error::RuntimeError(format!(
             "parameter index out of range: {index}"
@@ -938,7 +998,11 @@ fn set_script_macro_default(params: &PluginParams, index: usize, value: f32) -> 
             "macro default must be finite: {value}"
         )));
     }
-    params.set_script_macro_default(zero_based, value);
+    if zero_based < MACRO_COUNT {
+        params.set_script_macro_default(zero_based, value);
+    } else {
+        params.set_internal_macro_default(zero_based, value);
+    }
     Ok(())
 }
 
@@ -1476,6 +1540,57 @@ fn install_ui_api(
             }
             ui.lock()
                 .toggle(index, label.unwrap_or_else(|| format!("Macro {index}")));
+            Ok(())
+        })?,
+    )?;
+
+    let ui = builder.clone();
+    table.set(
+        "note_grid",
+        lua.create_function(
+            move |_, (first_macro, rows, num_steps, color): (usize, Table, usize, Option<String>)| {
+                if first_macro == 0 || first_macro + num_steps.saturating_sub(1) > MACRO_COUNT {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "note grid starting macro out of range: {first_macro}"
+                    )));
+                }
+                if !(num_steps == 4 || num_steps == 8 || num_steps == 16 || num_steps == 32) {
+                    return Err(mlua::Error::RuntimeError(
+                        "ui.note_grid() num_steps must be 4, 8, 16, or 32".to_string(),
+                    ));
+                }
+                let rows = rows
+                    .sequence_values::<String>()
+                    .collect::<mlua::Result<Vec<_>>>()?;
+                if rows.is_empty() || rows.len() > 16 {
+                    return Err(mlua::Error::RuntimeError(
+                        "ui.note_grid() requires 1 to 16 pitch rows".to_string(),
+                    ));
+                }
+                ui.lock().note_grid(first_macro, rows, num_steps, color);
+                Ok(())
+            },
+        )?,
+    )?;
+
+    let ui = builder.clone();
+    table.set(
+        "select",
+        lua.create_function(move |_, (index, label, choices): (usize, String, Table)| {
+            if index == 0 || index > MACRO_COUNT {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "parameter index out of range: {index}"
+                )));
+            }
+            let choices = choices
+                .sequence_values::<String>()
+                .collect::<mlua::Result<Vec<_>>>()?;
+            if choices.len() < 2 {
+                return Err(mlua::Error::RuntimeError(
+                    "ui.select() requires at least two choices".to_string(),
+                ));
+            }
+            ui.lock().select_param(index, label, choices);
             Ok(())
         })?,
     )?;
@@ -2226,8 +2341,8 @@ mod tests {
         let examples = [
             (
                 PluginKind::MidiFx,
-                include_str!("../../../factory/midi-fx/16th-arpeggiator.lua"),
-                0.5,
+                include_str!("../../../factory/midi-fx/step-sequencer.lua"),
+                0.0,
             ),
             (
                 PluginKind::Instrument,
@@ -2281,6 +2396,11 @@ mod tests {
             ),
             (
                 PluginKind::AudioFx,
+                include_str!("../../../factory/audio-fx/three-band-compressor.lua"),
+                250.0,
+            ),
+            (
+                PluginKind::AudioFx,
                 include_str!("../../../factory/audio-fx/stereo-reverb.lua"),
                 0.55,
             ),
@@ -2303,6 +2423,22 @@ mod tests {
             assert_eq!(host.params.script_macro_default(0), macro_1_default);
             host.build_ui_frame(Vec::new())
                 .unwrap_or_else(|error| panic!("{kind:?}: {error}"));
+            if source.contains("ui.note_grid(") {
+                let commands = host
+                    .build_ui_frame(Vec::new())
+                    .expect("note grid draw failed");
+                assert!(has_command(&commands, |command| matches!(
+                    command,
+                    UiCommand::NoteGrid { .. }
+                )));
+            }
+            if source.contains("ui.select(") {
+                let commands = host.build_ui_frame(Vec::new()).expect("select draw failed");
+                assert!(has_command(&commands, |command| matches!(
+                    command,
+                    UiCommand::SelectParam { .. }
+                )));
+            }
             if source.contains("ui.separator_horizontal()") {
                 let commands = host
                     .build_ui_frame(Vec::new())
@@ -2346,7 +2482,7 @@ mod tests {
                     .loaded
                     .as_ref()
                     .and_then(|loaded| loaded.midi_fn.clone())
-                    .expect("arpeggiator must define on_midi");
+                    .expect("step sequencer must define on_midi");
                 midi_fn
                     .call::<()>(("note_on", 60.0, 0.8, 0.0, 0.0))
                     .expect("arpeggiator note_on failed");
@@ -2354,8 +2490,9 @@ mod tests {
                     .call::<()>(("note_on", 64.0, 0.7, 0.0, 0.0))
                     .expect("arpeggiator second note_on failed");
                 let mut events = Vec::new();
-                for _ in 0..50 {
-                    host.process_midi_block(128, 44_100.0, Some(120.0), true, Some(0.0));
+                for block in 0..50 {
+                    let pos_beats = block as f64 * 128.0 * 120.0 / (60.0 * 44_100.0);
+                    host.process_midi_block(128, 44_100.0, Some(120.0), true, Some(pos_beats));
                     events.extend(host.midi_out.lock().drain());
                 }
                 assert!(
@@ -2375,7 +2512,7 @@ mod tests {
                     event,
                     NoteEvent::NoteOn {
                         key: Key::Number(64),
-                        voice_id: VoiceID::ID(1),
+                        voice_id: VoiceID::ID(2),
                         ..
                     }
                 )));

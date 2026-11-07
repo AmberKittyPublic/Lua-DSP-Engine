@@ -459,6 +459,48 @@ fn render_commands(
             UiCommand::Space(pixels) => {
                 ui.add_space(*pixels);
             }
+            UiCommand::SelectParam {
+                index,
+                label,
+                choices,
+            } => {
+                if let Some(slot) = index
+                    .checked_sub(1)
+                    .and_then(|index| params.macros.get(index))
+                {
+                    let macro_index = *index - 1;
+                    let last_choice = choices.len().saturating_sub(1);
+                    let mut selected = (slot.value.unmodulated_normalized_value()
+                        * last_choice as f32)
+                        .round() as usize;
+                    ui.horizontal(|ui| {
+                        render_macro_label(
+                            ui,
+                            label,
+                            &slot.value,
+                            params.script_macro_default(macro_index),
+                            setter,
+                        );
+                        egui::ComboBox::from_id_salt(format!("select_{index}"))
+                            .selected_text(choices.get(selected).cloned().unwrap_or_default())
+                            .show_ui(ui, |ui| {
+                                for (choice_index, choice) in choices.iter().enumerate() {
+                                    if ui
+                                        .selectable_value(&mut selected, choice_index, choice)
+                                        .clicked()
+                                    {
+                                        setter.begin_set_parameter(&slot.value);
+                                        setter.set_parameter_normalized(
+                                            &slot.value,
+                                            choice_index as f32 / last_choice as f32,
+                                        );
+                                        setter.end_set_parameter(&slot.value);
+                                    }
+                                }
+                            });
+                    });
+                }
+            }
             UiCommand::RadioParam {
                 index,
                 label,
@@ -563,6 +605,62 @@ fn render_commands(
                         setter.set_parameter_normalized(&slot.value, f32::from(checked));
                         setter.end_set_parameter(&slot.value);
                     }
+                }
+            }
+            UiCommand::NoteGrid {
+                first_macro,
+                rows,
+                num_steps,
+                color,
+            } => {
+                let fill = color
+                    .as_deref()
+                    .map(parse_color)
+                    .unwrap_or_else(|| Color32::from_rgb(48, 128, 119));
+                let max_mask = (1u32 << rows.len()) - 1;
+                let cell_size = if *num_steps >= 32 { 14.0 } else { 18.0 };
+                ui.horizontal(|ui| {
+                    ui.add_sized(egui::vec2(34.0, 14.0), egui::Label::new("Pitch"));
+                    for step in 1..=*num_steps {
+                        ui.add_sized(
+                            egui::vec2(cell_size, 14.0),
+                            egui::Label::new(format!("{}", step)),
+                        );
+                    }
+                });
+                for (row, pitch) in rows.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.add_sized(
+                            egui::vec2(34.0, cell_size),
+                            egui::Label::new(egui::RichText::new(pitch).monospace().size(9.0)),
+                        );
+                        let bit = 1u32 << (rows.len() - 1 - row);
+                        for step in 0..*num_steps {
+                            let macro_index = *first_macro - 1 + step;
+                            let Some(slot) = params.macros.get(macro_index) else {
+                                continue;
+                            };
+                            let normalized = slot.value.unmodulated_normalized_value();
+                            let mask = (normalized * max_mask as f32).round() as u32;
+                            let active = mask & bit != 0;
+                            let button_color = if active { fill } else { Color32::from_gray(38) };
+                            let response = ui
+                                .add_sized(
+                                    egui::vec2(cell_size, cell_size),
+                                    egui::Button::new("").fill(button_color),
+                                )
+                                .on_hover_text(format!("Step {}: {pitch}", step + 1));
+                            if response.clicked() {
+                                let next_mask = mask ^ bit;
+                                setter.begin_set_parameter(&slot.value);
+                                setter.set_parameter_normalized(
+                                    &slot.value,
+                                    next_mask as f32 / max_mask as f32,
+                                );
+                                setter.end_set_parameter(&slot.value);
+                            }
+                        }
+                    });
                 }
             }
             UiCommand::Meter {

@@ -72,6 +72,11 @@ const FACTORY_SCRIPTS: &[FactoryScript] = &[
     },
     FactoryScript {
         kind: PluginKind::AudioFx,
+        name: "three-band-compressor.lua",
+        source: include_str!("../../../factory/audio-fx/three-band-compressor.lua"),
+    },
+    FactoryScript {
+        kind: PluginKind::AudioFx,
         name: "stereo-delay.lua",
         source: include_str!("../../../factory/audio-fx/stereo-delay.lua"),
     },
@@ -87,8 +92,8 @@ const FACTORY_SCRIPTS: &[FactoryScript] = &[
     },
     FactoryScript {
         kind: PluginKind::MidiFx,
-        name: "16th-arpeggiator.lua",
-        source: include_str!("../../../factory/midi-fx/16th-arpeggiator.lua"),
+        name: "step-sequencer.lua",
+        source: include_str!("../../../factory/midi-fx/step-sequencer.lua"),
     },
     FactoryScript {
         kind: PluginKind::MidiFx,

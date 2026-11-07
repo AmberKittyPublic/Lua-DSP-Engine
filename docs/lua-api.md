@@ -160,13 +160,14 @@ Transport fields are updated for processing callbacks. Do not assume a meaningfu
 
 ## `params`
 
-- `params.count()` returns `64`.
-- `params.get(index)` reads a macro value. It returns the normalized `0..1` value unless a script scale has been declared, in which case it returns the scaled float or integer value.
-- `params.set_range(index, scale)` declares how a normalized host macro maps to a script value.
+- `params.count()` returns `320` (64 host macros + 256 internal macros).
+- `params.get(index)` reads a macro value. It returns the normalized `0..1` value unless a script scale has been declared, in which case it returns the scaled float or integer value. Indices `1..64` are host macros (externally controllable); indices `65..320` are internal macros (script variables, not exposed to the host).
+- `params.set(index, value)` sets a macro value. Host macros (`1..64`) cannot be set from Lua (use UI or automation); internal macros (`65..320`) can be set freely.
+- `params.set_range(index, scale)` declares how a normalized host or internal macro maps to a script value.
 - `params.set_oversampling(factor)` sets the instrument processing oversampling factor, clamped to `1..16` (default `1`). Audio FX and MIDI FX remain at `1x`; only instruments expose the editor's oversampling selector. Factors above `1x` increase CPU use and currently allocate resampling buffers per block.
 - `params.default(index)` reads the current script-declared reset value in the script's scale.
 - `params.set_default(index, value)` declares one script reset value.
-- `params.set_defaults({ [index] = value, ... })` declares several at once.
+- `params.set(index, value)` sets a macro value. Host macros (`1..64`) cannot be set from Lua; internal macros (`65..320`) can be set freely. Values are in the script's declared scale (or `0..1` if no scale).
 
 ### Macro Defaults
 
@@ -410,6 +411,8 @@ expose arbitrary drawing.
 - `ui.param(index, label?, scale?)` draws a slider for macro `1..64`. `scale` uses the same object or array form as `params.set_range()` and makes the slider display the script-domain value. Double-clicking its label resets to the script default, or `0` if none was declared.
 - `ui.knob(index, label?, scale?)` binds a rotary control to macro `1..64`. It accepts the same optional scale spec as `ui.param()`; drag up/right to increase, and double-click the knob or label to reset to the script default.
 - `ui.toggle(index, label?)` binds a checkbox to macro `1..64`. It reads the normalized macro as on at `0.5` or above and writes `0` or `1`.
+- `ui.note_grid(first_macro, pitch_rows, color?)` draws an 8-pitch by 16-step button grid backed by 16 consecutive macros. Each macro is an integer bitmask in the script range `0..255`; clicking a cell toggles that pitch for the step. `pitch_rows` must contain eight labels, ordered high to low.
+- `ui.select(index, label, choices)` binds a dropdown to macro `1..64`. Each choice maps evenly from normalized macro value `0` to `1`.
 - `ui.radio_param(index, label, choices)` binds a radio group to macro `1..64`. It requires at least two string choices; the choices map evenly from normalized macro value `0` to `1`.
 - `ui.meter(value, label?)` draws a progress bar clamped to `0..1`.
 - `ui.colored_meter(value, label?, color)` draws a progress bar with the supplied named or hex fill color.

@@ -7,8 +7,10 @@ one. To apply the values declared in a script's `params.set_defaults()` call,
 choose **Reset macros to script defaults**; loading a script otherwise preserves
 existing macro values.
 
-- `midi-fx/16th-arpeggiator.lua`: transport-synced sixteenth-note arp. Hold MIDI
-  notes and start playback. Macros control gate, octave span, and direction.
+- `midi-fx/step-sequencer.lua`: 12-pitch by 4/8/16/32-step note grid where each
+  cell toggles a chromatic pitch; empty steps use the held chord (ARP) in live
+  mode or stay silent in MIDI-trigger mode; 17 synced rates; eight chord
+  note-walk modes; ratchets, swing, and humanization.
 - `midi-fx/transpose.lua`: octave selection with a macro-bound radio group plus a
   semitone slider. Change `OCTAVE_RANGE` in the script to change its octave span.
 - `instrument/fm-donk.lua`: polyphonic FM bass with a short pitch drop and ADSR
@@ -30,13 +32,18 @@ existing macro values.
 - `extensions/acid-303/`: mono 303-style synth with filter-envelope modulation and
   selectable saturator, bitcrush, tube, tape, overdrive, fuzz, and diode distortion.
   Its ADSR envelope can add up to 24 dB of distortion drive per note.
-- `audio-fx/stereo-delay.lua`: stereo feedback delay with optional ping-pong
-  routing and subtle LFO modulation.
-- `audio-fx/stereo-compressor.lua`: linked stereo compressor with an external
-  sidechain blend and soft-knee controls. Its extension computes the live level,
-  ducking, and transfer-curve series for the generic graph widget.
-- `audio-fx/stereo-reverb.lua`: stereo comb/allpass reverb with room, damping, wet,
-  and width controls.
+- `audio-fx/stereo-delay.lua`: stereo delay with Digital, Tape, Analog, BBD, and
+  Lo-fi characters; free or tempo-synced timing; ping-pong routing; feedback tone,
+  modulation, width, drive, and a repeat-pattern display.
+- `audio-fx/stereo-compressor.lua`: linked broadband stereo compressor with Clean,
+  Glue, Transistor, Tube, and Optical characteristics, an external sidechain blend,
+  and soft-knee controls.
+- `audio-fx/three-band-compressor.lua`: linked three-band compressor with adjustable
+  crossovers, independent threshold, ratio, attack, release, knee, and makeup per
+  band, the same five Character modes, and a band-split external sidechain.
+- `audio-fx/stereo-reverb.lua`: Room, Hall, Plate, Chamber, and Spring spaces with
+  adjustable decay, damping, predelay, size, diffusion, modulation, early
+  reflections, stereo width, freeze, and a tail-profile display.
 - `audio-fx/distortion-suite.lua`: selectable saturator, bitcrush/downsample, tube,
   tape, overdrive, fuzz, and diode modes, with shared drive, tone, bias, and mix
   controls. Bit depth and sample-rate reduction are adjustable in digital mode.

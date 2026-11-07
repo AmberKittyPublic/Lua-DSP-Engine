@@ -5,6 +5,8 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 pub const MACRO_COUNT: usize = 64;
+pub const INTERNAL_MACRO_COUNT: usize = 4096 - MACRO_COUNT;
+pub const TOTAL_MACRO_COUNT: usize = MACRO_COUNT + INTERNAL_MACRO_COUNT;
 pub const MAX_VOICES: usize = 32;
 const TRACE_LEN: usize = 128;
 const WAVEFORM_LEN: usize = 256;
@@ -167,6 +169,11 @@ pub struct PluginParams {
     macro_scale_types: [AtomicU32; MACRO_COUNT],
     macro_scale_mins: [AtomicU32; MACRO_COUNT],
     macro_scale_maxs: [AtomicU32; MACRO_COUNT],
+    internal_macro_values: [AtomicU32; INTERNAL_MACRO_COUNT],
+    internal_macro_scale_types: [AtomicU32; INTERNAL_MACRO_COUNT],
+    internal_macro_scale_mins: [AtomicU32; INTERNAL_MACRO_COUNT],
+    internal_macro_scale_maxs: [AtomicU32; INTERNAL_MACRO_COUNT],
+    internal_macro_defaults: [AtomicU32; INTERNAL_MACRO_COUNT],
     pub sample_rate: AtomicU32,
     pub meter_peak: AtomicU32,
     pub block_size: AtomicU32,
@@ -208,6 +215,11 @@ impl Default for PluginParams {
             macro_scale_types: std::array::from_fn(|_| AtomicU32::new(0)),
             macro_scale_mins: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
             macro_scale_maxs: std::array::from_fn(|_| AtomicU32::new(1.0f32.to_bits())),
+            internal_macro_values: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
+            internal_macro_scale_types: std::array::from_fn(|_| AtomicU32::new(0)),
+            internal_macro_scale_mins: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
+            internal_macro_scale_maxs: std::array::from_fn(|_| AtomicU32::new(1.0f32.to_bits())),
+            internal_macro_defaults: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
             sample_rate: AtomicU32::new(44_100.0f32.to_bits()),
             meter_peak: AtomicU32::new(0.0f32.to_bits()),
             block_size: AtomicU32::new(0),
@@ -275,11 +287,85 @@ impl PluginParams {
         )
     }
 
+    pub fn internal_macro_index(&self, index: usize) -> Option<usize> {
+        if index >= MACRO_COUNT && index < TOTAL_MACRO_COUNT {
+            Some(index - MACRO_COUNT)
+        } else {
+            None
+        }
+    }
+
+    pub fn is_internal_macro(&self, index: usize) -> bool {
+        index >= MACRO_COUNT && index < TOTAL_MACRO_COUNT
+    }
+
     pub fn macro_value(&self, index: usize) -> f32 {
         let value = self.macros[index].value.value();
         self.macro_scale(index)
             .map(|scale| scale.value(value))
             .unwrap_or(value)
+    }
+
+    pub fn internal_macro_value(&self, index: usize) -> f32 {
+        let internal = index - MACRO_COUNT;
+        let value = f32::from_bits(self.internal_macro_values[internal].load(Ordering::Relaxed));
+        self.internal_macro_scale(index)
+            .map(|scale| scale.value(value))
+            .unwrap_or(value)
+    }
+
+    pub fn set_internal_macro_value(&self, index: usize, value: f32) {
+        let internal = index - MACRO_COUNT;
+        self.internal_macro_values[internal].store(value.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn internal_macro_scale(&self, index: usize) -> Option<MacroScale> {
+        let internal = index - MACRO_COUNT;
+        let kind = match self.internal_macro_scale_types[internal].load(Ordering::Acquire) {
+            1 => MacroScaleType::Float,
+            2 => MacroScaleType::Integer,
+            _ => return None,
+        };
+        MacroScale::new(
+            kind,
+            f32::from_bits(self.internal_macro_scale_mins[internal].load(Ordering::Relaxed)),
+            f32::from_bits(self.internal_macro_scale_maxs[internal].load(Ordering::Relaxed)),
+        )
+    }
+
+    pub fn set_internal_macro_scale(&self, index: usize, scale: MacroScale) {
+        let internal = index - MACRO_COUNT;
+        let kind = match scale.kind {
+            MacroScaleType::Float => 1,
+            MacroScaleType::Integer => 2,
+        };
+        self.internal_macro_scale_types[internal].store(0, Ordering::Release);
+        self.internal_macro_scale_mins[internal].store(scale.min.to_bits(), Ordering::Relaxed);
+        self.internal_macro_scale_maxs[internal].store(scale.max.to_bits(), Ordering::Relaxed);
+        self.internal_macro_scale_types[internal].store(kind, Ordering::Release);
+    }
+
+    pub fn clear_internal_macro_scales(&self) {
+        for kind in &self.internal_macro_scale_types {
+            kind.store(0, Ordering::Release);
+        }
+    }
+
+    pub fn internal_macro_default(&self, index: usize) -> f32 {
+        let internal = index - MACRO_COUNT;
+        f32::from_bits(self.internal_macro_defaults[internal].load(Ordering::Relaxed))
+    }
+
+    pub fn set_internal_macro_default(&self, index: usize, value: f32) {
+        let internal = index - MACRO_COUNT;
+        self.internal_macro_defaults[internal].store(value.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn internal_macro_default_normalized(&self, index: usize) -> f32 {
+        let value = self.internal_macro_default(index);
+        self.internal_macro_scale(index)
+            .map(|scale| scale.normalize(value))
+            .unwrap_or_else(|| value.clamp(0.0, 1.0))
     }
 
     pub fn script_macro_default_normalized(&self, index: usize) -> f32 {

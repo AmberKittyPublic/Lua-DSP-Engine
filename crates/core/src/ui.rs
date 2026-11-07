@@ -11,6 +11,11 @@ pub enum UiCommand {
     HorizontalSeparator,
     VerticalSeparator,
     Space(f32),
+    SelectParam {
+        index: usize,
+        label: String,
+        choices: Vec<String>,
+    },
     RadioParam {
         index: usize,
         label: String,
@@ -34,6 +39,12 @@ pub enum UiCommand {
     Toggle {
         index: usize,
         label: String,
+    },
+    NoteGrid {
+        first_macro: usize,
+        rows: Vec<String>,
+        num_steps: usize,
+        color: Option<String>,
     },
     Meter {
         value: f32,
@@ -153,6 +164,14 @@ impl UiBuilder {
         self.push(UiCommand::Space(pixels));
     }
 
+    pub fn select_param(&mut self, index: usize, label: String, choices: Vec<String>) {
+        self.push(UiCommand::SelectParam {
+            index,
+            label,
+            choices,
+        });
+    }
+
     pub fn radio_param(&mut self, index: usize, label: String, choices: Vec<String>) {
         self.push(UiCommand::RadioParam {
             index,
@@ -184,6 +203,21 @@ impl UiBuilder {
 
     pub fn toggle(&mut self, index: usize, label: String) {
         self.push(UiCommand::Toggle { index, label });
+    }
+
+    pub fn note_grid(
+        &mut self,
+        first_macro: usize,
+        rows: Vec<String>,
+        num_steps: usize,
+        color: Option<String>,
+    ) {
+        self.push(UiCommand::NoteGrid {
+            first_macro,
+            rows,
+            num_steps,
+            color,
+        });
     }
 
     pub fn meter(&mut self, value: f32, label: Option<String>) {
